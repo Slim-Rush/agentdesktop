@@ -1,0 +1,26 @@
+schema_version: 1
+id: STORY-20261026ae47f2938d17
+title: Chat-based failure diagnosis using local coding agents
+spec_path: docs/specs/STORY-20261026ae47f2938d17.md
+status: backlog
+tasks:
+- id: task-b02b4b1b42
+  title: Implement assistant provider adapter with argv-only runner
+  completed: false
+- id: task-973e2f8ccd
+  title: Add chat, context, and action Tauri commands
+  completed: false
+- id: task-480d2f81f7
+  title: Build Assistant view and failure entry points
+  completed: false
+- id: task-abcd3003d6
+  title: Implement playbooks and confirmed actions
+  completed: false
+- id: task-761ad3857b
+  title: Add audit and automated assistant tests
+  completed: false
+- id: task-f65dcc14d6
+  title: Update target architecture diagram
+  completed: false
+created_at: '2026-10-26T06:53:12+00:00'
+updated_at: '2026-10-26T06:53:12+00:00'

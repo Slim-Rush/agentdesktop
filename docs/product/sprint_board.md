@@ -2,6 +2,27 @@
 
 ## 📋 Backlog
 
+### [STORY-20261026412cfc3ce6a9] Desktop agent management UI and job progress
+> Spec: docs/specs/STORY-20261026412cfc3ce6a9.md
+
+- [ ] Add desktop types and Tauri commands
+- [ ] Implement Agents view and navigation
+- [ ] Implement job progress and history
+- [ ] Implement per-agent config editor with If-Match
+- [ ] Add sync status and refresh actions
+- [ ] Add Storybook/Vitest coverage
+- [ ] Update target architecture diagram
+
+### [STORY-20261026ae47f2938d17] Chat-based failure diagnosis using local coding agents
+> Spec: docs/specs/STORY-20261026ae47f2938d17.md
+
+- [ ] Implement assistant provider adapter with argv-only runner
+- [ ] Add chat, context, and action Tauri commands
+- [ ] Build Assistant view and failure entry points
+- [ ] Implement playbooks and confirmed actions
+- [ ] Add audit and automated assistant tests
+- [ ] Update target architecture diagram
+
 ## 🔄 In Progress
 
 ## 🧪 Verifying
