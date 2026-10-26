@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -8,9 +14,10 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use agentdesktop_core::{
+    catalog::CatalogPublicKey,
     config::{
         ControllerConnectionConfig, DaemonConfig, LlmGatewayAuthentication, ProgramAuthentication,
         VsCodeCopilotChat, valid_client_id,
@@ -40,6 +47,10 @@ use crate::{
 pub struct AgentRuntime {
     pub catalog: Arc<Mutex<CatalogCache>>,
     pub local_config: Arc<Mutex<LocalConfigStore>>,
+    pub catalog_keys: Vec<CatalogPublicKey>,
+    /// Startup configuration used as the base for local-mode program merging.
+    pub base_config: DaemonConfig,
+    pub sync_interval: Duration,
     /// A manual catalog-sync request; `None` when no controller is configured.
     pub catalog_sync: Option<mpsc::Sender<()>>,
 }
@@ -69,6 +80,7 @@ pub struct AppState {
 pub struct ProgramControl {
     reconciler: Reconciler,
     current: watch::Receiver<Option<CurrentConfig>>,
+    current_tx: watch::Sender<Option<CurrentConfig>>,
     /// Where a re-apply's outcome goes for the controller; `None` without one.
     statuses: Option<watch::Sender<Option<TickStatus>>>,
     state_dir: PathBuf,
@@ -80,12 +92,14 @@ impl ProgramControl {
     pub(crate) fn new(
         reconciler: Reconciler,
         current: watch::Receiver<Option<CurrentConfig>>,
+        current_tx: watch::Sender<Option<CurrentConfig>>,
         statuses: Option<watch::Sender<Option<TickStatus>>>,
         state_dir: PathBuf,
     ) -> Self {
         Self {
             reconciler,
             current,
+            current_tx,
             statuses,
             state_dir,
             changing: Arc::default(),
@@ -207,7 +221,14 @@ impl ProgramControl {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!("apply local configuration: {error:#}"),
             )
-        })
+        })?;
+        // The reconcile tick must re-apply the local authority, not the last
+        // controller-pushed configuration.
+        self.current_tx.send_replace(Some(CurrentConfig {
+            revision: None,
+            config: Arc::new(config.clone()),
+        }));
+        Ok(())
     }
 }
 
@@ -297,7 +318,10 @@ fn agent_runtime(state: &AppState) -> Result<Arc<AgentRuntime>, (StatusCode, Str
 
 async fn catalog(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let runtime = agent_runtime(&state)?;
-    let cache = runtime.catalog.lock().await;
+    let cache = runtime
+        .catalog
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot = cache.snapshot().ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -330,14 +354,20 @@ async fn sync_catalog(State(state): State<AppState>) -> Result<StatusCode, (Stat
 
 async fn agents(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let runtime = agent_runtime(&state)?;
-    let cache = runtime.catalog.lock().await;
+    let cache = runtime
+        .catalog
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot = cache.snapshot().ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             "agent catalog has not been synced".to_owned(),
         )
     })?;
-    let local = runtime.local_config.lock().await;
+    let local = runtime
+        .local_config
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let agents = snapshot
         .catalog
         .entries
@@ -369,7 +399,10 @@ async fn agent_config(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let runtime = agent_runtime(&state)?;
-    let cache = runtime.catalog.lock().await;
+    let cache = runtime
+        .catalog
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot = cache.snapshot().ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -383,7 +416,10 @@ async fn agent_config(
         .find(|entry| entry.id == id)
         .cloned()
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown agent {id:?}")))?;
-    let local = runtime.local_config.lock().await;
+    let local = runtime
+        .local_config
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(Json(json!({
         "id": entry.id,
         "programKey": entry.program_key,
@@ -428,7 +464,10 @@ async fn put_agent_config(
             )
         })?;
     let program_key = {
-        let cache = runtime.catalog.lock().await;
+        let cache = runtime
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let snapshot = cache.snapshot().ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -444,7 +483,10 @@ async fn put_agent_config(
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown agent {id:?}")))?
     };
     let revision = {
-        let mut local = runtime.local_config.lock().await;
+        let mut local = runtime
+            .local_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut programs = BTreeMap::new();
         programs.insert(program_key, value);
         local
@@ -460,7 +502,10 @@ async fn put_agent_config(
             })?
     };
     let effective = {
-        let local = runtime.local_config.lock().await;
+        let local = runtime
+            .local_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         local.effective(&state.config)
     }
     .map_err(|error| (StatusCode::UNPROCESSABLE_ENTITY, format!("{error:#}")))?;
@@ -474,13 +519,25 @@ async fn put_agent_config(
             )
         })?
         .apply_local(&effective)?;
+    // Wake the controller stream so AgentState reflects the local change now
+    // rather than at the next periodic catalog sync.
+    if let Some(sender) = runtime.catalog_sync.as_ref() {
+        let _ = sender.try_send(());
+    }
     Ok(Json(json!({ "revision": revision })))
 }
 
 async fn sync_status(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
     let runtime = agent_runtime(&state)?;
-    let catalog = runtime.catalog.lock().await.status();
-    let local = runtime.local_config.lock().await;
+    let catalog = runtime
+        .catalog
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .status();
+    let local = runtime
+        .local_config
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(Json(json!({
         "catalog": catalog,
         "localConfigRevision": local.current().revision,
@@ -1103,10 +1160,16 @@ programs:
             if let Some(current) = &current {
                 reconciler.apply(&current.config).unwrap();
             }
-            let (_current, current) = watch::channel(current);
+            let (current_tx, current) = watch::channel(current);
             let (statuses, reports) = watch::channel(None);
             (
-                ProgramControl::new(reconciler, current, Some(statuses), root.join("state")),
+                ProgramControl::new(
+                    reconciler,
+                    current,
+                    current_tx,
+                    Some(statuses),
+                    root.join("state"),
+                ),
                 reports,
             )
         }

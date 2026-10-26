@@ -2,7 +2,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -12,7 +12,7 @@ use std::{
     os::unix::fs::{FileTypeExt, PermissionsExt},
 };
 
-use agentdesktop_core::config::GitHubTokenSource;
+use agentdesktop_core::config::{ConfigMode, GitHubTokenSource};
 use agentdesktop_core::{
     DEFAULT_CONFIG_PATH, DEFAULT_SOCKET_PATH, VERSION, config,
     model::{DaemonControllerInfo, DaemonInfo, DaemonScope, LlmProxyInfo, UsageReceiverInfo},
@@ -27,7 +27,7 @@ use tokio::net::UnixListener;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::{
-    sync::{Mutex, mpsc, watch},
+    sync::{mpsc, watch},
     time,
 };
 use tonic::transport::server::TcpIncoming;
@@ -526,6 +526,17 @@ where
     } else {
         Some(local_config)
     };
+    let local_config_store = LocalConfigStore::load(args.state_dir.join("local-config.yaml"))
+        .context("load local agent configuration")?;
+    let initial_config = if config.config_mode == ConfigMode::Local {
+        Some(
+            local_config_store
+                .effective(&config)
+                .context("apply local agent configuration")?,
+        )
+    } else {
+        initial_config
+    };
     if let Some(initial_config) = &initial_config {
         // The outcomes are logged before a failure stops the daemon.
         let (report, applied) = reconciler.apply_with_report(initial_config);
@@ -556,6 +567,7 @@ where
     let program_control = api::ProgramControl::new(
         reconciler.clone(),
         current_config.subscribe(),
+        current_config.clone(),
         reapply_statuses.clone(),
         args.state_dir.clone(),
     );
@@ -583,6 +595,27 @@ where
     let telemetry = config.controller.as_ref().map(|_| telemetry_sender.clone());
     let (logout_sender, logout_receiver) = mpsc::channel(1);
     let logout = config.controller.as_ref().map(|_| logout_sender);
+    let has_controller = config.controller.is_some();
+    let catalog_keys = config
+        .agent_catalog
+        .as_ref()
+        .map(|catalog| catalog.public_keys.clone())
+        .unwrap_or_default();
+    let catalog = CatalogCache::load(&args.state_dir, &catalog_keys);
+    let sync_interval = config
+        .agent_catalog
+        .as_ref()
+        .map(|catalog| catalog.sync_interval)
+        .unwrap_or(Duration::from_secs(300));
+    let (catalog_sync_tx, catalog_sync_rx) = mpsc::channel(1);
+    let agent_runtime = Arc::new(AgentRuntime {
+        catalog: Arc::new(Mutex::new(catalog)),
+        local_config: Arc::new(Mutex::new(local_config_store)),
+        catalog_keys,
+        base_config: config.clone(),
+        sync_interval,
+        catalog_sync: has_controller.then_some(catalog_sync_tx),
+    });
     if let Some(controller) = config.controller.clone() {
         let remote_current_config = current_config.clone();
         let remote_discovery = inventory.clone();
@@ -600,25 +633,14 @@ where
             remote::Requests {
                 telemetry: telemetry_receiver,
                 logout: logout_receiver,
+                catalog_sync: Some(catalog_sync_rx),
                 current: remote_current_config,
                 tick_statuses: Some(tick_status_receiver),
             },
+            Some(agent_runtime.clone()),
+            config.config_mode == ConfigMode::Local,
         ));
     }
-    let has_controller = config.controller.is_some();
-    let catalog_keys = config
-        .agent_catalog
-        .as_ref()
-        .map(|catalog| catalog.public_keys.clone())
-        .unwrap_or_default();
-    let catalog = CatalogCache::load(&args.state_dir, &catalog_keys);
-    let local_config = LocalConfigStore::load(args.state_dir.join("local-config.yaml"))
-        .context("load local agent configuration")?;
-    let agent_runtime = Arc::new(AgentRuntime {
-        catalog: Arc::new(Mutex::new(catalog)),
-        local_config: Arc::new(Mutex::new(local_config)),
-        catalog_sync: None,
-    });
     let state = api::AppState {
         config,
         daemon_info,
