@@ -7,6 +7,7 @@ import {
   Gauge,
   Laptop,
   LoaderCircle,
+  Package,
   RefreshCw,
   Settings,
 } from "lucide-react";
@@ -73,6 +74,15 @@ export function DesktopShell({
             >
               <Laptop size={18} />
               <span className="desktop-nav-label">Tools</span>
+            </button>
+            <button
+              type="button"
+              className={view === "agents" ? "active" : ""}
+              aria-current={view === "agents" ? "page" : undefined}
+              onClick={() => onNavigate("agents")}
+            >
+              <Package size={18} />
+              <span className="desktop-nav-label">Agents</span>
             </button>
             {showUsage ? (
               <button

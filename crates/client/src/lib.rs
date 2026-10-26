@@ -121,7 +121,35 @@ where
     serde_json::from_slice(&body).context("decode daemon response")
 }
 
+/// Sends a PUT with a JSON body and an `If-Match` revision.
+pub async fn put_json_decode<T, R>(
+    endpoint: &Path,
+    path: &str,
+    if_match: &str,
+    value: &T,
+) -> anyhow::Result<R>
+where
+    T: Serialize,
+    R: DeserializeOwned,
+{
+    let body = send_json_with(endpoint, "PUT", path, &[("if-match", if_match)], value).await?;
+    serde_json::from_slice(&body).context("decode daemon response")
+}
+
 async fn send_json<T>(endpoint: &Path, path: &str, value: &T) -> anyhow::Result<Bytes>
+where
+    T: Serialize,
+{
+    send_json_with(endpoint, "POST", path, &[], value).await
+}
+
+async fn send_json_with<T>(
+    endpoint: &Path,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    value: &T,
+) -> anyhow::Result<Bytes>
 where
     T: Serialize,
 {
@@ -137,12 +165,15 @@ where
     });
 
     let body = serde_json::to_vec(value).context("encode request body")?;
-    let request = Request::builder()
-        .method("POST")
+    let mut request = Request::builder()
+        .method(method)
         .uri(path)
         .header("host", "localhost")
-        .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body)))?;
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let request = request.body(Full::new(Bytes::from(body)))?;
     let response = sender.send_request(request).await.context("send request")?;
     let status = response.status();
     let body = response

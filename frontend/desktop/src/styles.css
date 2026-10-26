@@ -1209,3 +1209,164 @@ p {
     animation: none;
   }
 }
+
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-list {
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+}
+
+.agent-row {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--card);
+}
+
+.agent-row-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-row-main h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.agent-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.agent-state-success {
+  color: var(--green);
+  background: var(--success-notice-surface);
+}
+
+.agent-state-attention {
+  color: var(--attention, var(--ink));
+  background: var(--surface);
+}
+
+.agent-state-neutral,
+.agent-state-muted {
+  color: var(--foreground-secondary);
+  background: var(--surface);
+}
+
+.agent-muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-job-list {
+  margin: 0;
+  padding: 0 16px 16px;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.agent-job {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.agent-job code {
+  font-size: 12px;
+}
+
+.agent-config-label {
+  display: block;
+  margin: 0 16px 6px;
+  font-size: 12px;
+  color: var(--foreground-secondary);
+}
+
+.agent-config {
+  display: block;
+  width: calc(100% - 32px);
+  min-height: 220px;
+  margin: 0 16px 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font:
+    12px / 1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  resize: vertical;
+}
+
+.agent-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 45%);
+}
+
+.agent-modal {
+  width: min(560px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 30%);
+}
+
+.agent-modal h3 {
+  margin: 0 0 8px;
+}
+
+.agent-modal ul {
+  max-height: 180px;
+  overflow: auto;
+  padding-left: 18px;
+}
+
+.agent-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.agent-modal-actions .danger {
+  color: var(--on-danger);
+  background: var(--danger-button);
+  border: 1px solid var(--danger-button);
+}
+
+.agent-modal-actions .danger:hover {
+  background: var(--danger-button-hover-strong);
+  border-color: var(--danger-button-hover-strong);
+}

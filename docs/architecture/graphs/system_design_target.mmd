@@ -4,6 +4,7 @@
 graph TB
     subgraph Workstation["Developer workstation"]
         Desktop["Agent Desktop<br/>(Tauri, crates/agentdesktop)"]
+        AgentsView["Agents view<br/>(catalog, jobs, config)"]:::target
         Daemon["Agent daemon<br/>(crates/agent)"]
         Client["Local client<br/>(crates/client)"]
         CatalogCache["Catalog cache<br/>(signed, last-known-good)"]:::target
@@ -39,6 +40,8 @@ graph TB
 
     Developer --> Desktop
     Desktop --> Client
+    Desktop --> AgentsView
+    AgentsView -.->|"catalog/agents/jobs/config"| Daemon
     Client -->|"Unix socket / named pipe<br/>HTTP JSON"| Daemon
     Daemon -->|"discover + reconcile"| Tools
     Daemon -->|"discover"| DiscoveryOnly

@@ -664,6 +664,99 @@ async fn setup_managed_device() -> Result<ManagedDeviceSnapshot, String> {
     Ok(managed_snapshot(config.controller.is_some(), Some(&status)))
 }
 
+#[tauri::command]
+async fn get_catalog() -> Result<serde_json::Value, String> {
+    client::get(&socket_path(), "/v1/catalog")
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn get_agents() -> Result<serde_json::Value, String> {
+    client::get(&socket_path(), "/v1/agents")
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn get_jobs() -> Result<serde_json::Value, String> {
+    client::get(&socket_path(), "/v1/jobs")
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn get_job(job_id: String) -> Result<serde_json::Value, String> {
+    client::get(&socket_path(), &format!("/v1/jobs/{job_id}"))
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn start_agent_job(
+    agent_id: String,
+    action: String,
+    version: String,
+    dry_run: bool,
+) -> Result<serde_json::Value, String> {
+    client::post_json_decode(
+        &socket_path(),
+        &format!("/v1/agents/{agent_id}/jobs"),
+        &serde_json::json!({
+            "action": action,
+            "version": version,
+            "idempotencyKey": "",
+            "dryRun": dry_run,
+        }),
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn get_agent_config(agent_id: String) -> Result<serde_json::Value, String> {
+    client::get(&socket_path(), &format!("/v1/agents/{agent_id}/config"))
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn save_agent_config(
+    agent_id: String,
+    revision: u64,
+    config: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    client::put_json_decode(
+        &socket_path(),
+        &format!("/v1/agents/{agent_id}/config"),
+        &revision.to_string(),
+        &config,
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn get_sync_status() -> Result<serde_json::Value, String> {
+    client::get(&socket_path(), "/v1/sync-status")
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn refresh_catalog() -> Result<(), String> {
+    client::post_json(&socket_path(), "/v1/catalog/sync", &())
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn refresh_inventory() -> Result<(), String> {
+    client::post_json(&socket_path(), "/v1/inventory/refresh", &())
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
 fn run_desktop() -> anyhow::Result<()> {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -747,7 +840,17 @@ fn run_desktop() -> anyhow::Result<()> {
             logout_managed_device,
             get_program_management,
             set_program_choice,
-            setup_managed_device
+            setup_managed_device,
+            get_catalog,
+            get_agents,
+            get_jobs,
+            get_job,
+            start_agent_job,
+            get_agent_config,
+            save_agent_config,
+            get_sync_status,
+            refresh_catalog,
+            refresh_inventory
         ])
         .run(tauri::generate_context!())?;
     Ok(())

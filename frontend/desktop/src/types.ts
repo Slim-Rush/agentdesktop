@@ -173,3 +173,82 @@ export interface ProgramManagement {
   /** Configured programs in reconcile order; empty before a configuration. */
   programs: ManagedProgram[];
 }
+
+/** One installable version in the signed agent catalog. */
+export interface CatalogVersion {
+  version: string;
+  artifactUrl: string;
+  sha256: string;
+  signature: string;
+}
+
+export interface CatalogEntry {
+  id: string;
+  displayName: string;
+  programKey: string;
+  platforms: string[];
+  architectures: string[];
+  installKind: "user";
+  versions: CatalogVersion[];
+  detection: { paths: string[] };
+}
+
+export interface CatalogResponse {
+  revision: number;
+  sha256: string;
+  entries: CatalogEntry[];
+}
+
+/** An agent from the catalog with the device's local configuration state. */
+export interface AgentSummary extends CatalogEntry {
+  configured: unknown;
+}
+
+export interface AgentsResponse {
+  revision: number;
+  agents: AgentSummary[];
+}
+
+/** Proto JobState numeric values (see fleet.proto). */
+export type AgentJobState = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+
+export interface AgentJob {
+  jobId: string;
+  attempt: number;
+  state: AgentJobState;
+  progressPercent: number;
+  errorCode: string;
+  errorMessage: string;
+  diagnosticsJson: string;
+}
+
+export interface JobsResponse {
+  jobs: AgentJob[];
+}
+
+export interface CatalogSyncStatus {
+  revision: number;
+  sha256: string;
+  lastSyncUnixSeconds: number;
+  stale: boolean;
+}
+
+export interface SyncStatus {
+  catalog: CatalogSyncStatus | null;
+  localConfigRevision: number;
+}
+
+export interface AgentConfigResponse {
+  id: string;
+  programKey: string;
+  revision: number;
+  config: unknown;
+}
+
+export type AgentAction = "install" | "update" | "uninstall";
+
+/** Response to a dry-run uninstall job: paths that would be removed. */
+export interface DryRunPlan {
+  dryRun: true;
+  paths: string[];
+}

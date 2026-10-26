@@ -2,28 +2,28 @@ schema_version: 1
 id: STORY-20261026412cfc3ce6a9
 title: Desktop agent management UI and job progress
 spec_path: docs/specs/STORY-20261026412cfc3ce6a9.md
-status: backlog
+status: verifying
 tasks:
 - id: task-a09d758ac5
   title: Add desktop types and Tauri commands
-  completed: false
+  completed: true
 - id: task-bb9176ff6e
   title: Implement Agents view and navigation
-  completed: false
+  completed: true
 - id: task-c488746898
   title: Implement job progress and history
-  completed: false
+  completed: true
 - id: task-7b0225fbc5
   title: Implement per-agent config editor with If-Match
-  completed: false
+  completed: true
 - id: task-64ee501518
   title: Add sync status and refresh actions
-  completed: false
+  completed: true
 - id: task-058c5a1ac5
   title: Add Storybook/Vitest coverage
-  completed: false
+  completed: true
 - id: task-38f1ec2502
   title: Update target architecture diagram
-  completed: false
+  completed: true
 created_at: '2026-10-26T06:53:12+00:00'
-updated_at: '2026-10-26T06:53:12+00:00'
+updated_at: '2026-10-26T07:03:31+00:00'

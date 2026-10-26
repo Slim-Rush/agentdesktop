@@ -3,8 +3,10 @@ import { ThemeProvider } from "@agentdesktop/ui";
 import { DesktopShell } from "./components/DesktopShell";
 import { PageBoundary } from "./components/PageBoundary";
 import { StatusLoading } from "./components/StatusLoading";
+import { useAgents } from "./useAgents";
 import { useDesktopModel } from "./useDesktopModel";
 import { useDeviceUsage } from "./useDeviceUsage";
+import { AgentsView } from "./views/AgentsView";
 import { EnrollmentView } from "./views/EnrollmentView";
 import { SettingsView } from "./views/SettingsView";
 import { StatusView } from "./views/StatusView";
@@ -13,6 +15,7 @@ import { UsageView } from "./views/UsageView";
 
 export function Desktop() {
   const model = useDesktopModel();
+  const agents = useAgents(model.view === "agents");
   const showingUsage =
     model.view === "usage" && model.showUsage && !model.needsEnrollment;
   const deviceUsage = useDeviceUsage(showingUsage);
@@ -68,6 +71,25 @@ export function Desktop() {
               isLoggingOut={model.isLoggingOut}
               onCopy={model.copyDiagnostics}
               onLogout={model.logout}
+            />
+          ) : model.view === "agents" ? (
+            <AgentsView
+              agents={agents.agents}
+              discovery={model.discovery}
+              jobs={agents.jobs}
+              sync={agents.sync}
+              platform={model.bootstrap?.platform ?? "macOS"}
+              loading={agents.loading}
+              error={agents.error}
+              notice={agents.notice}
+              busyAgent={agents.busyAgent}
+              onStartJob={agents.startJob}
+              onDryRun={agents.dryRunUninstall}
+              getConfig={agents.getAgentConfig}
+              saveConfig={agents.saveAgentConfig}
+              onRefresh={agents.load}
+              onRefreshCatalog={agents.refreshCatalog}
+              onRefreshInventory={agents.refreshInventory}
             />
           ) : showingUsage ? (
             <UsageView

@@ -269,6 +269,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/programs/choice", post(change_program_choice))
         .route("/v1/catalog", get(catalog))
         .route("/v1/catalog/sync", post(sync_catalog))
+        .route("/v1/inventory/refresh", post(refresh_inventory))
         .route("/v1/agents", get(agents))
         .route(
             "/v1/agents/{id}/config",
@@ -680,6 +681,25 @@ async fn create_local_job(
         let _ = refresh.try_send(());
     }
     Ok(Json(status_json(&status)))
+}
+
+async fn refresh_inventory(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let sender = runtime.inventory_refresh.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "inventory refresh is not available".to_owned(),
+        )
+    })?;
+    sender.try_send(()).map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "inventory refresh is already pending".to_owned(),
+        )
+    })?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn list_jobs(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
