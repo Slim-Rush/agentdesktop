@@ -1,13 +1,18 @@
 pub mod anthropic_oauth;
 pub mod api;
+pub mod catalog;
 pub mod cli;
 pub mod daemon;
 pub mod enrollment;
 pub mod gateway_oidc;
 mod github_oauth;
 pub mod identity;
+pub mod installer;
 mod inventory_watch;
+pub mod jobs;
 mod llm_proxy;
+pub mod local_config;
+pub mod manifest;
 pub mod oidc;
 mod program_choice;
 pub mod provider;

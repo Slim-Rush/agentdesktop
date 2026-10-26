@@ -11,6 +11,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::catalog::CatalogPublicKey;
+
 /// Configuration for an Agentdesktop daemon.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -41,6 +43,16 @@ pub struct DaemonConfig {
     /// controller-delivered policy.
     #[serde(default, skip_serializing_if = "ProgramSelectionConfig::is_default")]
     pub program_selection: ProgramSelectionConfig,
+    /// Signed agent catalog and local-configuration mode.
+    ///
+    /// Omit for the pre-catalog behavior. A BYOD device sets `configMode: local`
+    /// and pins one or more catalog public keys here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_catalog: Option<AgentCatalogConfig>,
+    /// How per-agent configuration is chosen. Defaults to `managed` so existing
+    /// controller-managed deployments keep their current behavior.
+    #[serde(default, skip_serializing_if = "ConfigMode::is_managed")]
+    pub config_mode: ConfigMode,
     /// Interval between inventory refreshes. Defaults to `15m`, and must be
     /// greater than zero.
     ///
@@ -205,6 +217,8 @@ impl Default for DaemonConfig {
             telemetry: TelemetryConfig::default(),
             programs: ProgramsConfig::default(),
             program_selection: ProgramSelectionConfig::default(),
+            agent_catalog: None,
+            config_mode: ConfigMode::default(),
             inventory_interval: default_inventory_interval(),
         }
     }
@@ -481,6 +495,13 @@ pub struct ControllerConfig {
     /// Daemon configuration distributed to enrolled devices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_config: Option<ControllerDaemonConfig>,
+    /// Signed agent catalog served to enrolled devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_catalog: Option<ControllerAgentCatalogConfig>,
+    /// Authentication for admin write endpoints. Absent means write requests
+    /// are refused until an operator configures it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_auth: Option<ControllerAdminAuthConfig>,
     /// LLM gateway JWT signing settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_jwt: Option<ControllerGatewayJwtConfig>,
@@ -526,6 +547,29 @@ pub struct ControllerDaemonConfig {
     /// Monotonically increasing revision assigned to the daemon configuration.
     #[serde(default = "default_daemon_config_revision")]
     pub revision: u64,
+}
+
+/// Signed agent catalog served by the controller.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControllerAgentCatalogConfig {
+    /// Path to the signed catalog JSON file.
+    pub path: PathBuf,
+    /// Pinned Ed25519 public keys used to validate the file at load time.
+    #[serde(default)]
+    pub public_keys: Vec<CatalogPublicKey>,
+}
+
+/// Verified OIDC actors allowed to use admin write endpoints.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControllerAdminAuthConfig {
+    /// OIDC subjects allowed to enqueue or cancel jobs. Empty refuses every
+    /// write request (fail closed).
+    #[serde(default)]
+    pub allowed_subjects: Vec<String>,
 }
 
 /// Settings for issuing short-lived LLM gateway JWTs.
@@ -675,6 +719,43 @@ impl ProgramSelectionConfig {
     fn is_default(&self) -> bool {
         self == &Self::default()
     }
+}
+
+/// How a daemon chooses the per-agent configuration it applies.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigMode {
+    /// The daemon's local configuration is authoritative; controller pushes do
+    /// not change `programs` or `programSelection`.
+    Local,
+    /// The controller-pushed configuration is authoritative.
+    #[default]
+    Managed,
+}
+
+impl ConfigMode {
+    fn is_managed(&self) -> bool {
+        matches!(self, Self::Managed)
+    }
+}
+
+/// Daemon-side catalog settings: pinned keys and the sync cadence.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCatalogConfig {
+    /// Pinned Ed25519 public keys. A key id not in this set is rejected.
+    #[serde(default)]
+    pub public_keys: Vec<CatalogPublicKey>,
+    /// Catalog sync interval. Defaults to five minutes.
+    #[serde(default = "default_catalog_sync_interval", with = "humantime_serde")]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub sync_interval: Duration,
+}
+
+fn default_catalog_sync_interval() -> Duration {
+    Duration::from_secs(300)
 }
 
 /// Settings for developer tools managed by Agentdesktop.

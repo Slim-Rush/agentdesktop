@@ -3,8 +3,9 @@ use std::pin::Pin;
 use agentdesktop_proto::fleet::{
     AgentMessage, BeginEnrollmentRequest, BeginEnrollmentResponse, CompleteEnrollmentRequest,
     ConfigStatus, ControllerMessage, DeviceCertificateResponse, DeviceUsageRequest,
-    DeviceUsageResponse, EnrollResponse, LlmGatewayCredentialRequest, LlmGatewayCredentialResponse,
-    RenewDeviceCertificateRequest, agent_message, controller_message,
+    DeviceUsageResponse, EnrollResponse, GetAgentCatalogRequest, GetAgentCatalogResponse,
+    ListPendingJobsRequest, ListPendingJobsResponse, LlmGatewayCredentialRequest,
+    LlmGatewayCredentialResponse, RenewDeviceCertificateRequest, agent_message, controller_message,
     fleet_agent_server::FleetAgent,
 };
 use futures_core::Stream;
@@ -19,10 +20,12 @@ use agentdesktop_core::config::{LlmGatewayAuthentication, ProgramAuthentication,
 use agentdesktop_usage::UsageError;
 
 use crate::{
+    catalog::CatalogStore,
     daemon_config::DaemonConfigStore,
     database::{Database, DevicePrincipal},
     device_ca::DeviceCertificateIssuer,
     gateway_jwt::GatewayJwtIssuer,
+    jobs::JobState as LocalJobState,
     oidc::{OidcPrincipal, OidcProvider},
 };
 
@@ -33,6 +36,7 @@ pub struct FleetAgentService {
     daemon_config: DaemonConfigStore,
     gateway_jwt_issuer: Option<GatewayJwtIssuer>,
     device_certificate_issuer: Option<DeviceCertificateIssuer>,
+    catalog: CatalogStore,
     usage_enabled: bool,
 }
 
@@ -50,8 +54,14 @@ impl FleetAgentService {
             daemon_config,
             gateway_jwt_issuer,
             device_certificate_issuer,
+            catalog: CatalogStore::empty(),
             usage_enabled: false,
         }
+    }
+
+    pub fn with_catalog(mut self, catalog: CatalogStore) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     /// Tells devices that the controller collects gateway usage.
@@ -250,6 +260,46 @@ impl FleetAgent for FleetAgentService {
         })
     }
 
+    async fn get_agent_catalog(
+        &self,
+        request: Request<GetAgentCatalogRequest>,
+    ) -> Result<Response<GetAgentCatalogResponse>, Status> {
+        self.authenticate_device(&request).await?;
+        let snapshot = self
+            .catalog
+            .current()
+            .ok_or_else(|| Status::failed_precondition("agent catalog is not configured"))?;
+        let request = request.into_inner();
+        let unchanged = request.known_revision == snapshot.catalog.revision
+            && request.known_sha256 == snapshot.sha256;
+        Ok(Response::new(GetAgentCatalogResponse {
+            unchanged,
+            revision: snapshot.catalog.revision,
+            sha256: snapshot.sha256.clone(),
+            signed_catalog_json: if unchanged {
+                Vec::new()
+            } else {
+                snapshot.signed_catalog_json.clone()
+            },
+        }))
+    }
+
+    async fn list_pending_jobs(
+        &self,
+        request: Request<ListPendingJobsRequest>,
+    ) -> Result<Response<ListPendingJobsResponse>, Status> {
+        let device_id = self.authenticate_device(&request).await?;
+        let jobs = self
+            .database
+            .pending_jobs(&device_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|job| job.to_proto())
+            .collect();
+        Ok(Response::new(ListPendingJobsResponse { jobs }))
+    }
+
     async fn connect(
         &self,
         request: Request<tonic::Streaming<AgentMessage>>,
@@ -270,6 +320,24 @@ impl FleetAgent for FleetAgentService {
             sender
                 .send(Ok(ControllerMessage {
                     message: Some(controller_message::Message::DaemonConfig(daemon_config)),
+                }))
+                .await
+                .map_err(|_| Status::unavailable("stream closed"))?;
+        }
+        // Deliver unfinished jobs first; a reconnect resends non-terminal rows.
+        for job in self
+            .database
+            .pending_jobs(&authenticated_device_id)
+            .await
+            .map_err(internal)?
+        {
+            self.database
+                .mark_job_dispatched(&job.id)
+                .await
+                .map_err(internal)?;
+            sender
+                .send(Ok(ControllerMessage {
+                    message: Some(controller_message::Message::AgentJob(job.to_proto())),
                 }))
                 .await
                 .map_err(|_| Status::unavailable("stream closed"))?;
@@ -561,6 +629,66 @@ async fn handle_agent_message(
         Some(agent_message::Message::Telemetry(event)) => {
             database.insert_telemetry(device_id, &event).await?;
             debug!(device_id, "stored telemetry event");
+        }
+        Some(agent_message::Message::AgentState(state)) => {
+            database.update_agent_state(device_id, &state).await?;
+            debug!(
+                device_id,
+                revision = state.catalog_revision,
+                stale = state.stale,
+                agents = state.agents.len(),
+                "stored agent state"
+            );
+        }
+        Some(agent_message::Message::JobStatus(status)) => {
+            let Some(state) = LocalJobState::from_proto(status.state) else {
+                warn!(
+                    device_id,
+                    job_id = %status.job_id,
+                    state = status.state,
+                    "ignored job status with an unknown state"
+                );
+                return Ok(());
+            };
+            let updated = database
+                .update_job_status(
+                    device_id,
+                    &status.job_id,
+                    status.attempt,
+                    state,
+                    &status.error_code,
+                    &status.error_message,
+                    &status.diagnostics_json,
+                )
+                .await?;
+            if updated {
+                database
+                    .insert_audit(
+                        &format!("device:{device_id}"),
+                        "job.status",
+                        device_id,
+                        &serde_json::json!({
+                            "jobId": status.job_id,
+                            "attempt": status.attempt,
+                            "state": state.as_str(),
+                            "errorCode": status.error_code,
+                        }),
+                    )
+                    .await?;
+                info!(
+                    device_id,
+                    job_id = %status.job_id,
+                    state = state.as_str(),
+                    "updated job status"
+                );
+            } else {
+                warn!(
+                    device_id,
+                    job_id = %status.job_id,
+                    attempt = status.attempt,
+                    "ignored stale or terminal job status"
+                );
+            }
         }
         None => {}
     }

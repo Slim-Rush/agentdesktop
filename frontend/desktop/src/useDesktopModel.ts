@@ -1,6 +1,7 @@
 import type { ColorMode } from "@agentdesktop/ui";
 import {
   startTransition,
+  useCallback,
   useEffect,
   useOptimistic,
   useRef,
@@ -30,7 +31,13 @@ import type {
   Settings,
 } from "./types";
 
-export type View = "home" | "tools" | "usage" | "settings";
+export type View =
+  | "home"
+  | "tools"
+  | "usage"
+  | "settings"
+  | "agents"
+  | "assistant";
 export type Notice = { tone: "success" | "error"; message: string } | null;
 
 type StatusSource = "connector" | "managedDevice" | "discovery" | "programs";
@@ -118,35 +125,38 @@ export function useDesktopModel() {
   }, [view, hasLoadedStatus, showUsage]);
 
   /** `programChange` is `programChanges` from before `update` was read. */
-  function applyStatusUpdate(update: StatusUpdate, programChange: number) {
-    const nextErrors: StatusErrors = {};
-    startTransition(() => {
-      if (update.connector.status === "fulfilled") {
-        setConnector(update.connector.value);
-      } else {
-        nextErrors.connector = errorMessage(update.connector.reason);
-      }
-      if (update.managedDevice.status === "fulfilled") {
-        setManagedDevice(update.managedDevice.value);
-      } else {
-        nextErrors.managedDevice = errorMessage(update.managedDevice.reason);
-      }
-      if (update.discovery.status === "fulfilled") {
-        setDiscovery(update.discovery.value);
-      } else {
-        nextErrors.discovery = errorMessage(update.discovery.reason);
-      }
-      if (programChange === programChanges.current) {
-        if (update.programs.status === "fulfilled") {
-          setProgramManagement(update.programs.value);
+  const applyStatusUpdate = useCallback(
+    (update: StatusUpdate, programChange: number) => {
+      const nextErrors: StatusErrors = {};
+      startTransition(() => {
+        if (update.connector.status === "fulfilled") {
+          setConnector(update.connector.value);
         } else {
-          nextErrors.programs = errorMessage(update.programs.reason);
+          nextErrors.connector = errorMessage(update.connector.reason);
         }
-      }
-      setStatusErrors(nextErrors);
-      setHasLoadedStatus(true);
-    });
-  }
+        if (update.managedDevice.status === "fulfilled") {
+          setManagedDevice(update.managedDevice.value);
+        } else {
+          nextErrors.managedDevice = errorMessage(update.managedDevice.reason);
+        }
+        if (update.discovery.status === "fulfilled") {
+          setDiscovery(update.discovery.value);
+        } else {
+          nextErrors.discovery = errorMessage(update.discovery.reason);
+        }
+        if (programChange === programChanges.current) {
+          if (update.programs.status === "fulfilled") {
+            setProgramManagement(update.programs.value);
+          } else {
+            nextErrors.programs = errorMessage(update.programs.reason);
+          }
+        }
+        setStatusErrors(nextErrors);
+        setHasLoadedStatus(true);
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     let active = true;
@@ -243,7 +253,7 @@ export function useDesktopModel() {
       stopPolling();
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [managedDevice?.enrollment]);
+  }, [managedDevice]);
 
   useEffect(() => {
     let active = true;
@@ -279,7 +289,7 @@ export function useDesktopModel() {
       stopPolling();
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, []);
+  }, [applyStatusUpdate]);
 
   function refresh() {
     setNotice(null);
@@ -408,7 +418,11 @@ export function useDesktopModel() {
           ? "Status"
           : view === "usage"
             ? "Usage"
-            : "Tools";
+            : view === "agents"
+              ? "Agents"
+              : view === "assistant"
+                ? "Assistant"
+                : "Tools";
 
   return {
     bootstrap,

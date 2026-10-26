@@ -38,6 +38,7 @@ const meta = {
     isLoggingOut: false,
     managedDevice: approvedDevice,
     onCopy: fn(),
+    onDiagnose: fn(),
     onLogout: fn(),
   },
 } satisfies Meta<typeof StatusView>;
@@ -378,7 +379,14 @@ export const DaemonOffline: Story = {
     discovery: emptyDiscovery,
     managedDevice: unconfiguredDevice,
   },
-  play: async ({ canvas }) => {
+  play: async ({ args, canvas }) => {
+    await expect(
+      canvas.getByRole("button", { name: "Ask the assistant" }),
+    ).toBeVisible();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Ask the assistant" }),
+    );
+    await expect(args.onDiagnose).toHaveBeenCalledOnce();
     await userEvent.click(canvas.getByText("Advanced"));
     await expect(
       canvas.getByText(/Daemon information is unavailable/),

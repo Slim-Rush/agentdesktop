@@ -22,7 +22,7 @@ use tonic::{
 use tracing::{debug, info, warn};
 
 use agentdesktop_core::{
-    config::{self, ControllerConnectionConfig},
+    config::{self, ConfigMode, ControllerConnectionConfig},
     model::{
         ControllerConnectionError, ControllerConnectionStatus, DeviceUsage,
         Discovery as AgentDiscovery, TelemetryEvent as ModelTelemetryEvent, TelemetryEventKind,
@@ -30,10 +30,12 @@ use agentdesktop_core::{
     },
 };
 use agentdesktop_proto::fleet::{
-    self as proto, AgentMessage, ConfigState, ConfigStatus, DeviceUsageRequest, Discovery,
-    Heartbeat, Hello, Inventory, LlmGatewayCredentialRequest, ProgramState as ProtoProgramState,
-    ProgramStatus, RenewDeviceCertificateRequest, SessionNewEvent, TelemetryEvent, ToolUseEvent,
-    agent_message, controller_message, fleet_agent_client::FleetAgentClient, telemetry_event,
+    self as proto, AgentConfigStatus, AgentJob, AgentMessage, AgentState, ConfigState,
+    ConfigStatus, DeviceUsageRequest, Discovery, GetAgentCatalogRequest, Heartbeat, Hello,
+    Inventory, JobAction, JobStatus, LlmGatewayCredentialRequest,
+    ProgramState as ProtoProgramState, ProgramStatus, RenewDeviceCertificateRequest,
+    SessionNewEvent, TelemetryEvent, ToolUseEvent, agent_message, controller_message,
+    fleet_agent_client::FleetAgentClient, telemetry_event,
 };
 
 use crate::{
@@ -63,6 +65,8 @@ pub struct LogoutRequest {
 pub struct Requests {
     pub telemetry: mpsc::Receiver<ModelTelemetryEvent>,
     pub logout: mpsc::Receiver<LogoutRequest>,
+    /// Manual catalog-sync requests from the local API.
+    pub catalog_sync: Option<mpsc::Receiver<()>>,
     /// The daemon's current configuration, replaced by each pushed
     /// configuration that parses (read by the reconcile tick).
     pub(crate) current: watch::Sender<Option<CurrentConfig>>,
@@ -75,6 +79,9 @@ pub struct Requests {
 struct ConfigChannels {
     current: watch::Sender<Option<CurrentConfig>>,
     tick_statuses: Option<watch::Receiver<Option<TickStatus>>>,
+    catalog_sync: Option<mpsc::Receiver<()>>,
+    agent: Option<Arc<crate::api::AgentRuntime>>,
+    local_mode: bool,
 }
 
 /// Tracks whether the daemon's connection to the controller is currently
@@ -164,16 +171,22 @@ pub async fn run(
     enrollment: EnrollmentState,
     controller_status: ControllerConnectionState,
     requests: Requests,
+    agent: Option<Arc<crate::api::AgentRuntime>>,
+    local_mode: bool,
 ) {
     let Requests {
         mut telemetry,
         mut logout,
+        mut catalog_sync,
         current,
         tick_statuses,
     } = requests;
     let mut channels = ConfigChannels {
         current,
         tick_statuses,
+        catalog_sync: catalog_sync.take(),
+        agent,
+        local_mode,
     };
     let mut delay = INITIAL_RETRY_DELAY;
     loop {
@@ -720,6 +733,277 @@ fn usage_totals_from_proto(totals: Option<proto::UsageTotals>) -> UsageTotals {
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn sync_catalog(
+    client: &mut FleetAgentClient<Channel>,
+    agent: &crate::api::AgentRuntime,
+    state_dir: &Path,
+) -> anyhow::Result<()> {
+    let (known_revision, known_sha256) = {
+        let cache = agent
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .status()
+            .map(|status| (status.revision, status.sha256))
+            .unwrap_or((0, String::new()))
+    };
+    let response = client
+        .get_agent_catalog(Request::new(GetAgentCatalogRequest {
+            known_revision,
+            known_sha256,
+        }))
+        .await
+        .context("request agent catalog")?
+        .into_inner();
+    if !response.unchanged {
+        let mut cache = agent
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.replace(
+            state_dir,
+            &response.signed_catalog_json,
+            &agent.catalog_keys,
+            unix_time_seconds(),
+        )?;
+    }
+    Ok(())
+}
+
+async fn send_agent_state(
+    sender: &mpsc::Sender<AgentMessage>,
+    agent: &crate::api::AgentRuntime,
+) -> anyhow::Result<()> {
+    let (status, entries) = {
+        let cache = agent
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(status) = cache.status() else {
+            return Ok(());
+        };
+        let entries = cache
+            .snapshot()
+            .map(|snapshot| snapshot.catalog.entries.clone())
+            .unwrap_or_default();
+        (status, entries)
+    };
+    let agents = {
+        let local = agent
+            .local_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        local
+            .current()
+            .programs
+            .iter()
+            .map(|(program_key, value)| {
+                let agent_id = entries
+                    .iter()
+                    .find(|entry| &entry.program_key == program_key)
+                    .map(|entry| entry.id.clone())
+                    .unwrap_or_else(|| program_key.clone());
+                AgentConfigStatus {
+                    agent_id,
+                    program_key: program_key.clone(),
+                    state: if value.is_null() {
+                        "removed".to_owned()
+                    } else {
+                        "configured".to_owned()
+                    },
+                    detail: String::new(),
+                }
+            })
+            .collect()
+    };
+    send(
+        sender,
+        agent_message::Message::AgentState(AgentState {
+            catalog_revision: status.revision,
+            catalog_sha256: status.sha256,
+            last_sync_unix_seconds: status.last_sync_unix_seconds,
+            stale: status.stale,
+            agents,
+        }),
+    )
+    .await
+}
+
+async fn next_catalog_sync(receiver: &mut Option<mpsc::Receiver<()>>) -> Option<()> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn agent_capabilities() -> Vec<String> {
+    let mut capabilities = vec!["agent_catalog_v1".to_owned()];
+    #[cfg(target_os = "macos")]
+    capabilities.push("user_install_macos".to_owned());
+    capabilities
+}
+
+fn job_failure(job: &AgentJob, code: &str, message: &str) -> JobStatus {
+    JobStatus {
+        job_id: job.job_id.clone(),
+        attempt: job.attempt,
+        state: agentdesktop_proto::fleet::JobState::Failed as i32,
+        progress_percent: 0,
+        error_code: code.to_owned(),
+        error_message: message.to_owned(),
+        diagnostics_json: String::new(),
+    }
+}
+
+fn job_state_status(
+    job: &AgentJob,
+    state: agentdesktop_proto::fleet::JobState,
+    progress_percent: u32,
+) -> JobStatus {
+    JobStatus {
+        job_id: job.job_id.clone(),
+        attempt: job.attempt,
+        state: state as i32,
+        progress_percent,
+        error_code: String::new(),
+        error_message: String::new(),
+        diagnostics_json: String::new(),
+    }
+}
+
+async fn handle_job(
+    sender: &mpsc::Sender<AgentMessage>,
+    agent: &crate::api::AgentRuntime,
+    job: AgentJob,
+) -> anyhow::Result<()> {
+    send(
+        sender,
+        agent_message::Message::JobStatus(job_state_status(
+            &job,
+            agentdesktop_proto::fleet::JobState::Accepted,
+            5,
+        )),
+    )
+    .await?;
+    let snapshot = {
+        let cache = agent
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.snapshot()
+    };
+    let Some(snapshot) = snapshot else {
+        return send(
+            sender,
+            agent_message::Message::JobStatus(job_failure(
+                &job,
+                "catalog_unavailable",
+                "no verified catalog is cached",
+            )),
+        )
+        .await;
+    };
+    let Some(installer) = agent.installer.clone() else {
+        return send(
+            sender,
+            agent_message::Message::JobStatus(job_failure(
+                &job,
+                "unsupported_platform",
+                "user-level installation is not supported on this platform",
+            )),
+        )
+        .await;
+    };
+    let action = JobAction::try_from(job.action).unwrap_or(JobAction::Unspecified);
+    let mut artifact = None;
+    if matches!(action, JobAction::Install | JobAction::Update) {
+        let Some(entry) = snapshot
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == job.agent_id)
+        else {
+            return send(
+                sender,
+                agent_message::Message::JobStatus(job_failure(
+                    &job,
+                    "unknown_agent",
+                    "agent is not in the catalog",
+                )),
+            )
+            .await;
+        };
+        let Some(version) = entry
+            .versions
+            .iter()
+            .find(|version| version.version == job.version)
+        else {
+            return send(
+                sender,
+                agent_message::Message::JobStatus(job_failure(
+                    &job,
+                    "unknown_version",
+                    "version is not in the catalog",
+                )),
+            )
+            .await;
+        };
+        match crate::jobs::download_artifact(&version.artifact_url).await {
+            Ok(bytes) => artifact = Some(bytes),
+            Err(error) => {
+                return send(
+                    sender,
+                    agent_message::Message::JobStatus(job_failure(
+                        &job,
+                        "download_failed",
+                        &format!("{error:#}"),
+                    )),
+                )
+                .await;
+            }
+        }
+    }
+    send(
+        sender,
+        agent_message::Message::JobStatus(job_state_status(
+            &job,
+            agentdesktop_proto::fleet::JobState::Running,
+            10,
+        )),
+    )
+    .await?;
+    let jobs = agent.jobs.clone();
+    let keys = agent.catalog_keys.clone();
+    let snapshot_for_job = snapshot;
+    let job_for_task = job.clone();
+    let status = match tokio::task::spawn_blocking(move || {
+        jobs.execute(
+            &job_for_task,
+            &snapshot_for_job,
+            &keys,
+            artifact.as_deref(),
+            installer.as_ref(),
+        )
+    })
+    .await
+    {
+        Ok(status) => status,
+        Err(error) => job_failure(
+            &job,
+            "install_failed",
+            &format!("executor task failed: {error}"),
+        ),
+    };
+    if status.state == agentdesktop_proto::fleet::JobState::Succeeded as i32
+        && let Some(refresh) = agent.inventory_refresh.as_ref()
+    {
+        let _ = refresh.try_send(());
+    }
+    send(sender, agent_message::Message::JobStatus(status)).await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn connect(
     controller: &ControllerConnectionConfig,
     identity: &Identity,
@@ -759,6 +1043,7 @@ async fn connect(
             os: std::env::consts::OS.to_string(),
             architecture: std::env::consts::ARCH.to_string(),
             agent_version: agentdesktop_core::VERSION.to_string(),
+            capabilities: agent_capabilities(),
         }),
     )
     .await?;
@@ -768,6 +1053,24 @@ async fn connect(
 
     info!(address = %controller.address, "connected to controller");
     controller_status.mark_connected().await;
+    if let Some(agent) = channels.agent.as_ref() {
+        if let Err(error) = sync_catalog(&mut client, agent, state_dir).await {
+            warn!(error = %format!("{error:#}"), "initial agent catalog sync failed");
+            agent
+                .catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mark_stale();
+        }
+        send_agent_state(&sender, agent).await?;
+    }
+    let catalog_interval = channels
+        .agent
+        .as_ref()
+        .map(|agent| agent.sync_interval)
+        .unwrap_or(Duration::from_secs(300));
+    let mut catalog_timer =
+        time::interval_at(time::Instant::now() + catalog_interval, catalog_interval);
     let mut heartbeat = time::interval(controller.heartbeat_interval);
     let reconnect_at = identity.oauth.expires_at_unix_seconds.saturating_sub(60);
     let oauth_reconnect = time::sleep(Duration::from_secs(
@@ -788,6 +1091,32 @@ async fn connect(
                         .as_secs(),
                 })).await?;
                 controller_status.mark_seen().await;
+            }
+            _ = catalog_timer.tick() => {
+                if let Some(agent) = channels.agent.as_ref() {
+                    if let Err(error) = sync_catalog(&mut client, agent, state_dir).await {
+                        warn!(error = %format!("{error:#}"), "periodic agent catalog sync failed");
+                        agent
+                            .catalog
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .mark_stale();
+                    }
+                    send_agent_state(&sender, agent).await?;
+                }
+            }
+            Some(()) = next_catalog_sync(&mut channels.catalog_sync) => {
+                if let Some(agent) = channels.agent.as_ref() {
+                    if let Err(error) = sync_catalog(&mut client, agent, state_dir).await {
+                        warn!(error = %format!("{error:#}"), "manual agent catalog sync failed");
+                        agent
+                            .catalog
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .mark_stale();
+                    }
+                    send_agent_state(&sender, agent).await?;
+                }
             }
             Some(event) = telemetry.recv() => {
                 send(&sender, agent_message::Message::Telemetry(telemetry_to_proto(event))).await?;
@@ -821,32 +1150,48 @@ async fn connect(
                     return Ok(());
                 };
                 controller_status.mark_seen().await;
-                if let Some(controller_message::Message::DaemonConfig(config)) = message.message {
-                    info!(
-                        revision = config.revision,
-                        bytes = config.yaml.len(),
-                        "received daemon configuration"
-                    );
-                    stream_revision = Some(config.revision);
-                    let parsed = replace_current_config(&channels.current, &config);
-                    let parsed_ok = parsed.is_ok();
-                    let status = apply_parsed(state_dir, &config, parsed, reconciler);
-                    // A parsed configuration whose apply failed is the current
-                    // one but not yet saved; a later tick that applies it
-                    // saves it, so a restart does not go back to the previous one.
-                    pending_persist = (parsed_ok && !status.error.is_empty())
-                        .then(|| (config.revision, config.yaml.clone()));
-                    last_sent = Some(status.clone());
-                    if status.error.is_empty() {
-                        info!(revision = status.revision, "applied daemon configuration");
-                    } else {
-                        warn!(
-                            revision = status.revision,
-                            error = %status.error,
-                            "failed daemon configuration"
+                match message.message {
+                    Some(controller_message::Message::DaemonConfig(config)) => {
+                        info!(
+                            revision = config.revision,
+                            bytes = config.yaml.len(),
+                            "received daemon configuration"
                         );
+                        stream_revision = Some(config.revision);
+                        let parsed = replace_current_config(&channels.current, &config);
+                        let parsed_ok = parsed.is_ok();
+                        let status = apply_parsed(
+                            state_dir,
+                            &config,
+                            parsed,
+                            reconciler,
+                            Some(&channels.current),
+                            channels.agent.as_deref(),
+                            channels.local_mode,
+                        );
+                        // A parsed configuration whose apply failed is the current
+                        // one but not yet saved; a later tick that applies it
+                        // saves it, so a restart does not go back to the previous one.
+                        pending_persist = (parsed_ok && !status.error.is_empty())
+                            .then(|| (config.revision, config.yaml.clone()));
+                        last_sent = Some(status.clone());
+                        if status.error.is_empty() {
+                            info!(revision = status.revision, "applied daemon configuration");
+                        } else {
+                            warn!(
+                                revision = status.revision,
+                                error = %status.error,
+                                "failed daemon configuration"
+                            );
+                        }
+                        send(&sender, agent_message::Message::ConfigStatus(status)).await?;
                     }
-                    send(&sender, agent_message::Message::ConfigStatus(status)).await?;
+                    Some(controller_message::Message::AgentJob(job)) => {
+                        if let Some(agent) = channels.agent.as_ref() {
+                            handle_job(&sender, agent, job).await?;
+                        }
+                    }
+                    None => {}
                 }
             }
         }
@@ -892,21 +1237,43 @@ fn apply_daemon_config(
     reconciler: &Reconciler,
 ) -> ConfigStatus {
     let parsed = parse_pushed_config(&config);
-    apply_parsed(state_dir, &config, parsed, reconciler)
+    apply_parsed(state_dir, &config, parsed, reconciler, None, None, false)
 }
 
 /// Applies a pushed configuration already checked by [`parse_pushed_config`]
 /// and persists it once its apply succeeded.
+#[allow(clippy::too_many_arguments)]
 fn apply_parsed(
     state_dir: &Path,
     config: &agentdesktop_proto::fleet::DaemonConfig,
     parsed: anyhow::Result<agentdesktop_core::config::DaemonConfig>,
     reconciler: &Reconciler,
+    current: Option<&watch::Sender<Option<CurrentConfig>>>,
+    agent: Option<&crate::api::AgentRuntime>,
+    local_mode: bool,
 ) -> ConfigStatus {
     let mut programs = Vec::new();
     let result = (|| -> anyhow::Result<()> {
-        let daemon_config = parsed?;
+        let mut daemon_config = parsed?;
+        if local_mode && let Some(agent) = agent {
+            let local = agent
+                .local_config
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            daemon_config.config_mode = ConfigMode::Local;
+            // In local mode the controller cannot change the program set; the
+            // startup configuration is the base for absent-key inheritance.
+            daemon_config.programs = agent.base_config.programs.clone();
+            daemon_config.program_selection = agent.base_config.program_selection.clone();
+            daemon_config = local.effective(&daemon_config)?;
+        }
         debug!(revision = config.revision, "parsed daemon configuration");
+        if let Some(current) = current {
+            current.send_replace(Some(CurrentConfig {
+                revision: Some(config.revision),
+                config: Arc::new(daemon_config.clone()),
+            }));
+        }
         let (report, applied) = reconciler.apply_with_report(&daemon_config);
         report.log();
         programs = program_statuses(&report);
@@ -1645,6 +2012,67 @@ mod tests {
             root.join("bin/agentdesktop"),
             root.join("agentdesktop.sock"),
         )
+    }
+
+    #[test]
+    fn local_mode_ignores_pushed_programs_and_applies_local_config() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "agentdesktop-remote-local-mode-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let mut local =
+            crate::local_config::LocalConfigStore::load(state_dir.join("local-config.yaml"))
+                .unwrap();
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert(
+            "claudeCode".to_owned(),
+            serde_json::json!({"theme": "light"}),
+        );
+        local.update(0, programs, None).unwrap();
+        let agent = crate::api::AgentRuntime {
+            catalog: Arc::new(std::sync::Mutex::new(
+                crate::catalog::CatalogCache::default(),
+            )),
+            local_config: Arc::new(std::sync::Mutex::new(local)),
+            catalog_keys: Vec::new(),
+            base_config: agentdesktop_core::config::parse_daemon("configMode: local\n").unwrap(),
+            sync_interval: Duration::from_secs(300),
+            jobs: crate::jobs::JobExecutor::new(state_dir.clone()),
+            installer: None,
+            inventory_refresh: None,
+            catalog_sync: None,
+        };
+        let reconciler = test_reconciler(&state_dir);
+        let pushed = agentdesktop_proto::fleet::DaemonConfig {
+            revision: 1,
+            yaml: b"programs:\n  codex:\n    managedConfig:\n      approval_policy: never\n"
+                .to_vec(),
+            sha256: Vec::new(),
+        };
+        let parsed = agentdesktop_core::config::parse_daemon(
+            "programs:\n  codex:\n    managedConfig:\n      approval_policy: never\n",
+        );
+
+        let status = super::apply_parsed(
+            &state_dir,
+            &pushed,
+            parsed,
+            &reconciler,
+            None,
+            Some(&agent),
+            true,
+        );
+
+        assert!(status.error.is_empty(), "{}", status.error);
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(state_dir.join("claude/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings.get("theme"), Some(&serde_json::json!("light")));
+        assert!(!state_dir.join("codex/config.toml").exists());
+        let _ = std::fs::remove_dir_all(&state_dir);
     }
 
     #[test]

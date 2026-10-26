@@ -1,8 +1,11 @@
 pub mod admin;
+pub mod admin_auth;
+pub mod catalog;
 pub mod daemon_config;
 pub mod database;
 pub mod device_ca;
 pub mod gateway_jwt;
+pub mod jobs;
 pub mod oidc;
 pub mod service;
 pub mod usage;

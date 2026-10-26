@@ -2,7 +2,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -12,7 +12,7 @@ use std::{
     os::unix::fs::{FileTypeExt, PermissionsExt},
 };
 
-use agentdesktop_core::config::GitHubTokenSource;
+use agentdesktop_core::config::{ConfigMode, GitHubTokenSource};
 use agentdesktop_core::{
     DEFAULT_CONFIG_PATH, DEFAULT_SOCKET_PATH, VERSION, config,
     model::{DaemonControllerInfo, DaemonInfo, DaemonScope, LlmProxyInfo, UsageReceiverInfo},
@@ -37,7 +37,13 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 #[cfg(windows)]
 use crate::windows_security::SecurityDescriptor;
 use crate::{
-    api, enrollment::EnrollmentState, gateway_oidc, inventory_watch::InventoryWatch, llm_proxy,
+    api::{self, AgentRuntime},
+    catalog::CatalogCache,
+    enrollment::EnrollmentState,
+    gateway_oidc,
+    inventory_watch::InventoryWatch,
+    llm_proxy,
+    local_config::LocalConfigStore,
     reconcile, remote, secure_fs,
 };
 
@@ -520,6 +526,17 @@ where
     } else {
         Some(local_config)
     };
+    let local_config_store = LocalConfigStore::load(args.state_dir.join("local-config.yaml"))
+        .context("load local agent configuration")?;
+    let initial_config = if config.config_mode == ConfigMode::Local {
+        Some(
+            local_config_store
+                .effective(&config)
+                .context("apply local agent configuration")?,
+        )
+    } else {
+        initial_config
+    };
     if let Some(initial_config) = &initial_config {
         // The outcomes are logged before a failure stops the daemon.
         let (report, applied) = reconciler.apply_with_report(initial_config);
@@ -550,6 +567,7 @@ where
     let program_control = api::ProgramControl::new(
         reconciler.clone(),
         current_config.subscribe(),
+        current_config.clone(),
         reapply_statuses.clone(),
         args.state_dir.clone(),
     );
@@ -568,15 +586,56 @@ where
     let discovery = reconciler.discover().await;
     log_discovery(&discovery);
     let (inventory_sender, inventory) = watch::channel(Arc::new(discovery));
+    let (inventory_refresh_tx, inventory_refresh_rx) = mpsc::channel(1);
     tokio::spawn(refresh_inventory(
         inventory_sender,
         config.inventory_interval,
         reconciler.clone(),
+        inventory_refresh_rx,
     ));
     let (telemetry_sender, telemetry_receiver) = mpsc::channel(256);
     let telemetry = config.controller.as_ref().map(|_| telemetry_sender.clone());
     let (logout_sender, logout_receiver) = mpsc::channel(1);
     let logout = config.controller.as_ref().map(|_| logout_sender);
+    let has_controller = config.controller.is_some();
+    let catalog_keys = config
+        .agent_catalog
+        .as_ref()
+        .map(|catalog| catalog.public_keys.clone())
+        .unwrap_or_default();
+    let catalog = CatalogCache::load(&args.state_dir, &catalog_keys);
+    let sync_interval = config
+        .agent_catalog
+        .as_ref()
+        .map(|catalog| catalog.sync_interval)
+        .unwrap_or(Duration::from_secs(300));
+    let (catalog_sync_tx, catalog_sync_rx) = mpsc::channel(1);
+    let jobs = crate::jobs::JobExecutor::new(args.state_dir.clone());
+    #[cfg(target_os = "macos")]
+    let installer: Option<Arc<dyn crate::installer::Installer>> = Some(Arc::new(
+        crate::installer::MacosInstaller::new(home_directory()?, args.state_dir.clone()),
+    ));
+    #[cfg(not(target_os = "macos"))]
+    let installer: Option<Arc<dyn crate::installer::Installer>> = None;
+    if let Some(installer) = &installer
+        && let Err(error) = installer.recover()
+    {
+        tracing::warn!(
+            error = %format!("{error:#}"),
+            "recovering interrupted agent installs failed"
+        );
+    }
+    let agent_runtime = Arc::new(AgentRuntime {
+        catalog: Arc::new(Mutex::new(catalog)),
+        local_config: Arc::new(Mutex::new(local_config_store)),
+        catalog_keys,
+        base_config: config.clone(),
+        sync_interval,
+        jobs,
+        installer,
+        inventory_refresh: Some(inventory_refresh_tx),
+        catalog_sync: has_controller.then_some(catalog_sync_tx),
+    });
     if let Some(controller) = config.controller.clone() {
         let remote_current_config = current_config.clone();
         let remote_discovery = inventory.clone();
@@ -594,12 +653,14 @@ where
             remote::Requests {
                 telemetry: telemetry_receiver,
                 logout: logout_receiver,
+                catalog_sync: Some(catalog_sync_rx),
                 current: remote_current_config,
                 tick_statuses: Some(tick_status_receiver),
             },
+            Some(agent_runtime.clone()),
+            config.config_mode == ConfigMode::Local,
         ));
     }
-    let has_controller = config.controller.is_some();
     let state = api::AppState {
         config,
         daemon_info,
@@ -612,6 +673,7 @@ where
         logout,
         usage: usage_store,
         programs: Some(program_control),
+        agent_runtime: Some(agent_runtime),
     };
     let app = api::router(state.clone());
     // The proxy is optional at runtime too: if serving fails (for example the
@@ -877,6 +939,7 @@ async fn refresh_inventory(
     sender: watch::Sender<Arc<agentdesktop_core::model::Discovery>>,
     interval: Duration,
     reconciler: reconcile::Reconciler,
+    manual: mpsc::Receiver<()>,
 ) {
     // The watcher owns its change channel so the capacity-one coalescing it
     // relies on cannot be undone here. When it cannot start, a dropped sender
@@ -891,7 +954,10 @@ async fn refresh_inventory(
             (None, mpsc::channel(1).1)
         }
     };
-    refresh_inventory_with(sender, interval, changes, watch, || reconciler.discover()).await;
+    refresh_inventory_with(sender, interval, changes, watch, manual, || {
+        reconciler.discover()
+    })
+    .await;
 }
 
 async fn refresh_inventory_with<F, Fut>(
@@ -899,6 +965,7 @@ async fn refresh_inventory_with<F, Fut>(
     interval: Duration,
     mut changes: mpsc::Receiver<()>,
     mut watch: Option<InventoryWatch>,
+    mut manual: mpsc::Receiver<()>,
     mut discover: F,
 ) where
     F: FnMut() -> Fut,
@@ -921,6 +988,7 @@ async fn refresh_inventory_with<F, Fut>(
         let trigger = tokio::select! {
             _ = ticker.tick() => "interval",
             Some(()) = changes.recv() => "change",
+            Some(()) = manual.recv() => "manual",
         };
         if sender.is_closed() {
             return;
@@ -1352,9 +1420,14 @@ mod tests {
     async fn refuses_to_schedule_a_zero_interval() {
         let (sender, receiver) = watch::channel(Arc::new(discovery(&["codex"])));
         let (_changes_sender, changes) = mpsc::channel(1);
-        super::refresh_inventory_with(sender, Duration::ZERO, changes, None, || async {
-            panic!("a zero interval must not schedule a scan")
-        })
+        super::refresh_inventory_with(
+            sender,
+            Duration::ZERO,
+            changes,
+            None,
+            mpsc::channel(1).1,
+            || async { panic!("a zero interval must not schedule a scan") },
+        )
         .await;
         assert_eq!(receiver.borrow().agents.len(), 1);
     }
@@ -1371,6 +1444,7 @@ mod tests {
                 Duration::from_secs(60),
                 changes,
                 None,
+                mpsc::channel(1).1,
                 move || {
                     let scan = scans.fetch_add(1, Ordering::SeqCst);
                     // The first scan repeats the boot snapshot; every later scan
@@ -1415,6 +1489,7 @@ mod tests {
             Duration::from_secs(3600),
             changes,
             None,
+            mpsc::channel(1).1,
             || async { discovery(&["codex", "cursor"]) },
         ));
 
@@ -1437,6 +1512,7 @@ mod tests {
             Duration::from_secs(60),
             changes,
             None,
+            mpsc::channel(1).1,
             || async { discovery(&["codex", "cursor"]) },
         ));
         drop(receiver);
@@ -1592,6 +1668,7 @@ programs:
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         });
 
         for (method, expected_status) in [("GET", "200 OK"), ("POST", "405 Method Not Allowed")] {
@@ -1731,6 +1808,7 @@ programs:
             logout: None,
             usage: store,
             programs: None,
+            agent_runtime: None,
         });
         let (mut client, server) = tokio::io::duplex(64 * 1024);
         let connection = tokio::spawn(serve_local_connection(server, app));
@@ -1817,6 +1895,7 @@ programs:
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         });
 
         for endpoint in ["/v1/health", "/v1/config", "/v1/daemon-info"] {

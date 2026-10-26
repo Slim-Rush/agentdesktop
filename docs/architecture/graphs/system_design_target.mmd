@@ -1,0 +1,97 @@
+%% Target Phase 1 architecture (not yet implemented).
+%% Current implemented baseline lives in system_design.mmd.
+%% Dashed nodes/edges are the Phase 1 additions.
+graph TB
+    subgraph Workstation["Developer workstation"]
+        Desktop["Agent Desktop<br/>(Tauri, crates/agentdesktop)"]
+        AgentsView["Agents view<br/>(catalog, jobs, config)"]:::target
+        AssistantView["Assistant view<br/>(chat, playbooks, actions)"]:::target
+        Provider["Local provider CLI<br/>(argv only, no shell)"]:::target
+        Audit["Assistant audit<br/>(action metadata only)"]:::target
+        Daemon["Agent daemon<br/>(crates/agent)"]
+        Client["Local client<br/>(crates/client)"]
+        CatalogCache["Catalog cache<br/>(signed, last-known-good)"]:::target
+        LocalConfig["Local config authority<br/>(local-config.yaml)"]:::target
+        JobExec["Job executor<br/>(crates/agent/jobs)"]:::target
+        Installer["macOS user-level installer<br/>(no sudo)"]:::target
+        Receipts["Install receipts<br/>(managed paths)"]:::target
+        Tools["Managed developer tools<br/>Claude Code, Claude Desktop, Codex,<br/>OpenCode, Grok, Copilot, VS Code"]
+        DiscoveryOnly["Discovery-only tools<br/>Cursor, Ollama"]
+        State["Local state<br/>config, identity, usage, receipts"]
+    end
+
+    subgraph Controller["Fleet controller (crates/controller)"]
+        Fleet["Fleet gRPC API<br/>FleetAgent"]
+        Admin["Admin HTTP API<br/>/api/v1/*"]
+        Catalog["Agent catalog<br/>(signed manifest)"]:::target
+        Jobs["Job dispatcher<br/>(agent_jobs)"]:::target
+        DB[("SQLite / PostgreSQL<br/>devices, catalog state, jobs,<br/>discoveries, usage")]
+        CA["Device CA"]
+        JWTSigner["Gateway JWT issuer<br/>JWKS"]
+        UsageIngest["Usage ingest<br/>OTLP logs"]
+    end
+
+    subgraph External["External services"]
+        OIDC["OIDC identity provider"]
+        Gateway["LLM gateway<br/>(agentgateway)"]
+        GitHub["GitHub OAuth"]
+    end
+
+    AdminUI["Controller web UI<br/>(frontend/controller)"]
+    AdminUser["Platform admin"]
+    Developer["Developer"]
+
+    Developer --> Desktop
+    Desktop --> Client
+    Desktop --> AgentsView
+    Desktop --> AssistantView
+    AgentsView -.->|"catalog/agents/jobs/config"| Daemon
+    AgentsView -.->|"failed job"| AssistantView
+    AssistantView -.->|"redacted context +<br/>confirmed actions"| Daemon
+    AssistantView -->|"argv + bounded output"| Provider
+    AssistantView --> Audit
+    Provider -.->|"existing CLI configuration"| Tools
+    Client -->|"Unix socket / named pipe<br/>HTTP JSON"| Daemon
+    Daemon -->|"discover + reconcile"| Tools
+    Daemon -->|"discover"| DiscoveryOnly
+    Daemon --> State
+    Desktop -->|"Tauri commands"| Client
+
+    Desktop -.->|"local API: catalog,<br/>config, job status"| Daemon
+    Daemon -.-> CatalogCache
+    Daemon -.-> LocalConfig
+    Daemon -.-> JobExec
+    JobExec -.-> Installer
+    Installer -.->|"install/uninstall"| Tools
+    Installer -.-> Receipts
+
+    Daemon -->|"gRPC over TLS<br/>device cert + OIDC token"| Fleet
+    Fleet --> DB
+    Fleet --> CA
+    Fleet --> JWTSigner
+    Fleet -->|"daemon config push<br/>stream"| Daemon
+    Daemon -->|"inventory, config status,<br/>telemetry, usage"| Fleet
+
+    Fleet -.->|"catalog + jobs"| Daemon
+    Daemon -.->|"agent state, job status"| Fleet
+    Admin -.-> Jobs
+    Jobs -.-> DB
+    Jobs -.-> Fleet
+    Catalog -.-> Fleet
+    Admin -.-> Catalog
+
+    Daemon -->|"device authorization /<br/>code exchange"| OIDC
+    Fleet --> OIDC
+    Daemon -->|"GitHub OAuth"| GitHub
+
+    Daemon -->|"credential request +<br/>local proxy"| Gateway
+    Gateway -->|"OTLP access logs"| UsageIngest
+    UsageIngest --> DB
+
+    AdminUser --> AdminUI
+    AdminUI -->|"HTTP JSON /api/v1/*"| Admin
+    Admin --> JWTSigner
+
+    classDef external fill:#eee,stroke:#999;
+    classDef target fill:#fff3cd,stroke:#b8860b,stroke-dasharray: 5 5;
+    class OIDC,Gateway,GitHub external;

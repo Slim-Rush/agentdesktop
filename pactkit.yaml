@@ -1,0 +1,16 @@
+# PactKit Configuration
+# Only override what you need — absent keys use built-in defaults.
+# See all options and current values: pactkit schema config
+
+schema_version: 1
+# Rust workspace + pnpm frontend. No built-in preset covers Cargo.toml, so
+# the stack is declared custom and the CI commands are explicit.
+stack: custom
+developer: ""
+ci:
+  provider: github
+  install_cmd: "cd frontend && pnpm install --frozen-lockfile"
+  lint_command: "make lint && cd frontend && pnpm check:lint"
+  test_cmd: "cargo test --workspace"
+  cwd: "."
+  language_version: "1.98"

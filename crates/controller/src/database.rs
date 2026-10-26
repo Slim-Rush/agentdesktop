@@ -4,10 +4,13 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use agentdesktop_core::model::{LocalModel, McpServer, ModelRuntime, Skill};
 use agentdesktop_proto::fleet::{
-    ConfigStatus, Hello, Inventory, ProgramState, TelemetryEvent, telemetry_event,
+    AgentState, ConfigStatus, Hello, Inventory, ProgramState, TelemetryEvent, telemetry_event,
 };
 use agentdesktop_usage::UsageStore;
 use serde::Serialize;
+use uuid::Uuid;
+
+use crate::jobs::{JobRecord, JobState, NewJob, event_for_state, transition};
 
 #[derive(Clone)]
 pub struct Database {
@@ -300,6 +303,14 @@ impl Database {
         Ok(())
     }
 
+    pub async fn device_exists(&self, device_id: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn device_principal(&self, device_id: &str) -> anyhow::Result<DevicePrincipal> {
         let (issuer, subject, idp_claims_json): (String, String, Option<String>) = sqlx::query_as(
             "SELECT enrolled_by_issuer, enrolled_by_subject, idp_claims_json
@@ -473,6 +484,233 @@ impl Database {
             .bind(i64::try_from(timestamp).unwrap_or(i64::MAX))
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Stores the catalog and per-agent configuration state reported by a device.
+    pub async fn update_agent_state(
+        &self,
+        device_id: &str,
+        state: &AgentState,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            state.catalog_sha256.len() == 64
+                && state
+                    .catalog_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit()),
+            "invalid catalog sha256"
+        );
+        anyhow::ensure!(
+            state.agents.len() <= 64,
+            "too many agent states in one report"
+        );
+        for agent in &state.agents {
+            anyhow::ensure!(
+                !agent.agent_id.is_empty()
+                    && agent.agent_id.len() <= 64
+                    && !agent.program_key.is_empty()
+                    && agent.program_key.len() <= 64
+                    && agent.detail.len() <= 2048,
+                "invalid agent state entry"
+            );
+        }
+        let agents_json = serde_json::to_string(
+            &state
+                .agents
+                .iter()
+                .map(|agent| {
+                    serde_json::json!({
+                        "agentId": agent.agent_id,
+                        "programKey": agent.program_key,
+                        "state": agent.state,
+                        "detail": agent.detail,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?;
+        let now = unix_time_seconds();
+        sqlx::query(
+            "INSERT INTO device_agent_state
+                (device_id, catalog_revision, catalog_sha256, last_sync_at, stale,
+                 agents_json, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (device_id) DO UPDATE SET
+                catalog_revision = EXCLUDED.catalog_revision,
+                catalog_sha256 = EXCLUDED.catalog_sha256,
+                last_sync_at = EXCLUDED.last_sync_at,
+                stale = EXCLUDED.stale,
+                agents_json = EXCLUDED.agents_json,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(device_id)
+        .bind(i64::try_from(state.catalog_revision).unwrap_or(i64::MAX))
+        .bind(&state.catalog_sha256)
+        .bind(i64::try_from(state.last_sync_unix_seconds).unwrap_or(i64::MAX))
+        .bind(if state.stale { 1_i64 } else { 0_i64 })
+        .bind(agents_json)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Creates a queued job, or returns the existing one for the same
+    /// `(device_id, idempotency_key)` pair.
+    pub async fn create_job(&self, job: &NewJob) -> anyhow::Result<JobRecord> {
+        let id = Uuid::new_v4().to_string();
+        let now = unix_time_seconds();
+        sqlx::query(
+            "INSERT INTO agent_jobs
+                (id, device_id, attempt, idempotency_key, origin, requested_by,
+                 catalog_id, catalog_revision, catalog_sha256, agent_id, version,
+                 action, state, deadline_unix_seconds, error_code, error_message,
+                 diagnostics_json, created_at, updated_at)
+             VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'','','',$14,$14)
+             ON CONFLICT (device_id, idempotency_key) DO NOTHING",
+        )
+        .bind(&id)
+        .bind(&job.device_id)
+        .bind(&job.idempotency_key)
+        .bind(&job.origin)
+        .bind(&job.requested_by)
+        .bind(&job.catalog_id)
+        .bind(job.catalog_revision)
+        .bind(&job.catalog_sha256)
+        .bind(&job.agent_id)
+        .bind(&job.version)
+        .bind(job.action as i64)
+        .bind(JobState::Queued.proto_value())
+        .bind(job.deadline_unix_seconds)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.job_by_idempotency(&job.device_id, &job.idempotency_key)
+            .await?
+            .context("job disappeared after insert")
+    }
+
+    pub async fn job_by_idempotency(
+        &self,
+        device_id: &str,
+        idempotency_key: &str,
+    ) -> anyhow::Result<Option<JobRecord>> {
+        Ok(sqlx::query_as::<_, JobRecord>(
+            "SELECT * FROM agent_jobs WHERE device_id = $1 AND idempotency_key = $2",
+        )
+        .bind(device_id)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn job(&self, id: &str) -> anyhow::Result<Option<JobRecord>> {
+        Ok(
+            sqlx::query_as::<_, JobRecord>("SELECT * FROM agent_jobs WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Jobs a reconnecting or newly connected device still needs to run.
+    pub async fn pending_jobs(&self, device_id: &str) -> anyhow::Result<Vec<JobRecord>> {
+        Ok(sqlx::query_as::<_, JobRecord>(
+            "SELECT * FROM agent_jobs
+             WHERE device_id = $1 AND state NOT IN ($2,$3,$4,$5)
+             ORDER BY created_at",
+        )
+        .bind(device_id)
+        .bind(JobState::Succeeded.proto_value())
+        .bind(JobState::Failed.proto_value())
+        .bind(JobState::Cancelled.proto_value())
+        .bind(JobState::Expired.proto_value())
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn mark_job_dispatched(&self, id: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE agent_jobs SET state = $2, updated_at = $3
+             WHERE id = $1 AND state = $4",
+        )
+        .bind(id)
+        .bind(JobState::Dispatched.proto_value())
+        .bind(unix_time_seconds())
+        .bind(JobState::Queued.proto_value())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Updates a non-terminal job only when the reporting attempt is current.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_job_status(
+        &self,
+        device_id: &str,
+        job_id: &str,
+        attempt: u32,
+        state: JobState,
+        error_code: &str,
+        error_message: &str,
+        diagnostics_json: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(current) = self.job(job_id).await? else {
+            return Ok(false);
+        };
+        let Some(current_state) = current.state() else {
+            return Ok(false);
+        };
+        let Some(event) = event_for_state(state) else {
+            return Ok(false);
+        };
+        if transition(current_state, event) != Some(state) {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE agent_jobs
+             SET state = $4, error_code = $5, error_message = $6,
+                 diagnostics_json = $7, updated_at = $8
+             WHERE id = $1 AND device_id = $2 AND attempt = $3
+               AND state NOT IN ($9,$10,$11,$12)",
+        )
+        .bind(job_id)
+        .bind(device_id)
+        .bind(i64::from(attempt))
+        .bind(state.proto_value())
+        .bind(error_code)
+        .bind(error_message)
+        .bind(diagnostics_json)
+        .bind(unix_time_seconds())
+        .bind(JobState::Succeeded.proto_value())
+        .bind(JobState::Failed.proto_value())
+        .bind(JobState::Cancelled.proto_value())
+        .bind(JobState::Expired.proto_value())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn insert_audit(
+        &self,
+        actor: &str,
+        action: &str,
+        device_id: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO audit_events
+                (id, actor, action, device_id, payload_json, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(actor)
+        .bind(action)
+        .bind(device_id)
+        .bind(serde_json::to_string(payload)?)
+        .bind(unix_time_seconds())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -742,11 +980,73 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use agentdesktop_proto::fleet::{
-        ConfigState, ConfigStatus, Discovery, Inventory, LocalModel, McpServer, ModelRuntime,
-        ProgramState, ProgramStatus, Skill, TelemetryEvent, ToolUseEvent, telemetry_event,
+        ConfigState, ConfigStatus, Discovery, Inventory, JobAction, LocalModel, McpServer,
+        ModelRuntime, ProgramState, ProgramStatus, Skill, TelemetryEvent, ToolUseEvent,
+        telemetry_event,
     };
 
     use super::Database;
+    use crate::jobs::{JobState, NewJob};
+
+    #[tokio::test]
+    async fn jobs_are_idempotent_and_only_a_non_terminal_attempt_updates() {
+        let path = std::env::temp_dir().join(format!(
+            "agentdesktop-jobs-test-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let database = Database::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+            .await
+            .expect("connect test database");
+        database
+            .enroll_device("device", "host", "issuer", "subject", None)
+            .await
+            .expect("enroll device");
+        assert!(database.device_exists("device").await.unwrap());
+        assert!(!database.device_exists("missing").await.unwrap());
+        let job = NewJob {
+            device_id: "device".to_owned(),
+            idempotency_key: "idem".to_owned(),
+            origin: "admin".to_owned(),
+            requested_by: "subject".to_owned(),
+            catalog_id: "catalog".to_owned(),
+            catalog_revision: 1,
+            catalog_sha256: "a".repeat(64),
+            agent_id: "claude-code".to_owned(),
+            version: "1.0.0".to_owned(),
+            action: JobAction::Install,
+            deadline_unix_seconds: 0,
+        };
+        let first = database.create_job(&job).await.expect("create job");
+        let second = database.create_job(&job).await.expect("idempotent job");
+        assert_eq!(first.id, second.id);
+        assert_eq!(database.pending_jobs("device").await.unwrap().len(), 1);
+
+        database.mark_job_dispatched(&first.id).await.unwrap();
+        // A daemon cannot skip straight from dispatched to succeeded.
+        assert!(
+            !database
+                .update_job_status("device", &first.id, 1, JobState::Succeeded, "", "", "",)
+                .await
+                .unwrap()
+        );
+        for state in [JobState::Accepted, JobState::Running, JobState::Succeeded] {
+            assert!(
+                database
+                    .update_job_status("device", &first.id, 1, state, "", "", "",)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            !database
+                .update_job_status("device", &first.id, 1, JobState::Failed, "late", "late", "",)
+                .await
+                .unwrap()
+        );
+        assert!(database.pending_jobs("device").await.unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
 
     #[tokio::test]
     async fn persists_device_inventory_and_telemetry() {
