@@ -18,6 +18,7 @@ use super::{Installer, Receipt};
 use crate::secure_fs;
 
 const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PendingInstall {
@@ -297,12 +298,27 @@ impl Installer for MacosInstaller {
 }
 
 fn extract_archive(artifact: &[u8], staging: &Path) -> anyhow::Result<String> {
+    extract_archive_with_limit(artifact, staging, MAX_UNCOMPRESSED_BYTES)
+}
+
+fn extract_archive_with_limit(
+    artifact: &[u8],
+    staging: &Path,
+    limit: u64,
+) -> anyhow::Result<String> {
     let decoder = GzDecoder::new(artifact);
     let mut archive = Archive::new(decoder);
     let mut files = Vec::new();
+    let mut total = 0_u64;
     for (index, entry) in archive.entries()?.enumerate() {
         ensure!(index < MAX_ARCHIVE_ENTRIES, "archive has too many entries");
         let mut entry = entry?;
+        let size = entry.header().size()?;
+        total = total.checked_add(size).context("archive size overflow")?;
+        ensure!(
+            total <= limit,
+            "archive exceeds the uncompressed size limit"
+        );
         let path = entry.path()?.into_owned();
         ensure!(
             path.components()
@@ -483,6 +499,14 @@ mod tests {
             .install("job-1", &entry(), "1.0.0", &artifact)
             .unwrap_err();
         assert!(error.to_string().contains("no files"));
+    }
+
+    #[test]
+    fn an_oversized_archive_is_rejected() {
+        let staging = tempdir().unwrap();
+        let artifact = archive(&[("claude", b"0123456789")]);
+        let error = super::extract_archive_with_limit(&artifact, staging.path(), 5).unwrap_err();
+        assert!(error.to_string().contains("uncompressed size"));
     }
 
     #[test]

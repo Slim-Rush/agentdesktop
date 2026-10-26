@@ -169,6 +169,7 @@ pub fn transition(state: JobState, event: JobEvent) -> Option<JobState> {
         (S::Accepted, E::Start) => Some(S::Running),
         (S::Accepted, E::Cancel) => Some(S::Cancelled),
         (S::Accepted, E::RequestCancel) => Some(S::CancelRequested),
+        (S::Accepted, E::Fail) => Some(S::Failed),
         (S::Running, E::Succeed) => Some(S::Succeeded),
         (S::Running, E::Fail) => Some(S::Failed),
         (S::Running, E::RequestCancel) => Some(S::CancelRequested),
@@ -209,6 +210,19 @@ pub fn action_to_proto(action: ProtoJobAction) -> &'static str {
         ProtoJobAction::Uninstall => "uninstall",
         ProtoJobAction::Update => "update",
         ProtoJobAction::Unspecified => "unspecified",
+    }
+}
+
+/// Map a daemon-reported state to the event that reaches it.
+pub fn event_for_state(state: JobState) -> Option<JobEvent> {
+    match state {
+        JobState::Accepted => Some(JobEvent::Accept),
+        JobState::Running => Some(JobEvent::Start),
+        JobState::Succeeded => Some(JobEvent::Succeed),
+        JobState::Failed => Some(JobEvent::Fail),
+        JobState::Cancelled => Some(JobEvent::Cancel),
+        JobState::CancelRequested => Some(JobEvent::RequestCancel),
+        JobState::Queued | JobState::Dispatched | JobState::Expired => None,
     }
 }
 

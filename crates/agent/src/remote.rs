@@ -856,11 +856,36 @@ fn job_failure(job: &AgentJob, code: &str, message: &str) -> JobStatus {
     }
 }
 
+fn job_state_status(
+    job: &AgentJob,
+    state: agentdesktop_proto::fleet::JobState,
+    progress_percent: u32,
+) -> JobStatus {
+    JobStatus {
+        job_id: job.job_id.clone(),
+        attempt: job.attempt,
+        state: state as i32,
+        progress_percent,
+        error_code: String::new(),
+        error_message: String::new(),
+        diagnostics_json: String::new(),
+    }
+}
+
 async fn handle_job(
     sender: &mpsc::Sender<AgentMessage>,
     agent: &crate::api::AgentRuntime,
     job: AgentJob,
 ) -> anyhow::Result<()> {
+    send(
+        sender,
+        agent_message::Message::JobStatus(job_state_status(
+            &job,
+            agentdesktop_proto::fleet::JobState::Accepted,
+            5,
+        )),
+    )
+    .await?;
     let snapshot = {
         let cache = agent
             .catalog
@@ -939,6 +964,15 @@ async fn handle_job(
             }
         }
     }
+    send(
+        sender,
+        agent_message::Message::JobStatus(job_state_status(
+            &job,
+            agentdesktop_proto::fleet::JobState::Running,
+            10,
+        )),
+    )
+    .await?;
     let jobs = agent.jobs.clone();
     let keys = agent.catalog_keys.clone();
     let snapshot_for_job = snapshot;

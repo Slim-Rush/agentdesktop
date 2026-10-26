@@ -10,7 +10,7 @@ use agentdesktop_usage::UsageStore;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::jobs::{JobRecord, JobState, NewJob};
+use crate::jobs::{JobRecord, JobState, NewJob, event_for_state, transition};
 
 #[derive(Clone)]
 pub struct Database {
@@ -647,6 +647,18 @@ impl Database {
         error_message: &str,
         diagnostics_json: &str,
     ) -> anyhow::Result<bool> {
+        let Some(current) = self.job(job_id).await? else {
+            return Ok(false);
+        };
+        let Some(current_state) = current.state() else {
+            return Ok(false);
+        };
+        let Some(event) = event_for_state(state) else {
+            return Ok(false);
+        };
+        if transition(current_state, event) != Some(state) {
+            return Ok(false);
+        }
         let result = sqlx::query(
             "UPDATE agent_jobs
              SET state = $4, error_code = $5, error_message = $6,
@@ -1001,12 +1013,21 @@ mod tests {
         assert_eq!(database.pending_jobs("device").await.unwrap().len(), 1);
 
         database.mark_job_dispatched(&first.id).await.unwrap();
+        // A daemon cannot skip straight from dispatched to succeeded.
         assert!(
-            database
+            !database
                 .update_job_status("device", &first.id, 1, JobState::Succeeded, "", "", "",)
                 .await
                 .unwrap()
         );
+        for state in [JobState::Accepted, JobState::Running, JobState::Succeeded] {
+            assert!(
+                database
+                    .update_job_status("device", &first.id, 1, state, "", "", "",)
+                    .await
+                    .unwrap()
+            );
+        }
         assert!(
             !database
                 .update_job_status("device", &first.id, 1, JobState::Failed, "late", "late", "",)

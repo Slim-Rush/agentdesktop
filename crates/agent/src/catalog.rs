@@ -10,7 +10,7 @@ use std::{
 };
 
 use agentdesktop_core::catalog::{CatalogPublicKey, CatalogSnapshot, SignedCatalog};
-use anyhow::{Context, ensure};
+use anyhow::{Context, bail, ensure};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -114,6 +114,24 @@ impl CatalogCache {
             snapshot.catalog.revision > 0,
             "catalog revision must be positive"
         );
+        if let Some(current) = self.snapshot.as_ref() {
+            if snapshot.catalog.revision < current.catalog.revision {
+                bail!(
+                    "catalog revision {} is older than the current revision {}",
+                    snapshot.catalog.revision,
+                    current.catalog.revision
+                );
+            }
+            if snapshot.catalog.revision == current.catalog.revision {
+                if snapshot.sha256 == current.sha256 {
+                    return Ok(Arc::clone(current));
+                }
+                bail!(
+                    "catalog revision {} has a different hash",
+                    snapshot.catalog.revision
+                );
+            }
+        }
 
         let directory = catalog_dir(state_dir);
         secure_fs::ensure_private_dir(&directory)?;
@@ -169,10 +187,22 @@ mod tests {
     use super::CatalogCache;
 
     fn signed(revision: u64) -> (Vec<u8>, CatalogPublicKey) {
+        signed_with(revision, "test")
+    }
+
+    fn signed_with(revision: u64, catalog_id: &str) -> (Vec<u8>, CatalogPublicKey) {
         let key_pair = Ed25519KeyPair::generate().expect("generate Ed25519 key");
+        signed_with_key(revision, catalog_id, &key_pair)
+    }
+
+    fn signed_with_key(
+        revision: u64,
+        catalog_id: &str,
+        key_pair: &Ed25519KeyPair,
+    ) -> (Vec<u8>, CatalogPublicKey) {
         let public_key = key_pair.public_key().as_ref().to_vec();
         let catalog = Catalog {
-            catalog_id: "test".to_owned(),
+            catalog_id: catalog_id.to_owned(),
             revision,
             created_at: 1,
             expires_at: u64::MAX,
@@ -250,5 +280,56 @@ mod tests {
         cache.replace(directory.path(), &bytes, &[key], 10).unwrap();
         cache.mark_stale();
         assert!(cache.status().unwrap().stale);
+    }
+
+    #[test]
+    fn an_older_revision_is_rejected() {
+        let directory = tempdir().unwrap();
+        let (newer, newer_key) = signed(2);
+        let (older, older_key) = signed(1);
+        let mut cache = CatalogCache::default();
+        cache
+            .replace(
+                directory.path(),
+                &newer,
+                std::slice::from_ref(&newer_key),
+                10,
+            )
+            .unwrap();
+        let error = cache
+            .replace(directory.path(), &older, &[older_key, newer_key], 20)
+            .unwrap_err();
+        assert!(error.to_string().contains("older"));
+        assert_eq!(cache.snapshot().unwrap().catalog.revision, 2);
+    }
+
+    #[test]
+    fn the_same_revision_with_a_different_hash_is_rejected() {
+        let directory = tempdir().unwrap();
+        let key_pair = Ed25519KeyPair::generate().expect("generate Ed25519 key");
+        let (first, key) = signed_with_key(1, "first", &key_pair);
+        let (second, _) = signed_with_key(1, "second", &key_pair);
+        let mut cache = CatalogCache::default();
+        cache
+            .replace(directory.path(), &first, std::slice::from_ref(&key), 10)
+            .unwrap();
+        let error = cache
+            .replace(directory.path(), &second, &[key], 20)
+            .unwrap_err();
+        assert!(error.to_string().contains("different hash"));
+        assert_eq!(cache.snapshot().unwrap().catalog.catalog_id, "first");
+    }
+
+    #[test]
+    fn the_same_revision_with_the_same_hash_is_unchanged() {
+        let directory = tempdir().unwrap();
+        let (bytes, key) = signed(1);
+        let mut cache = CatalogCache::default();
+        cache
+            .replace(directory.path(), &bytes, std::slice::from_ref(&key), 10)
+            .unwrap();
+        let snapshot = cache.replace(directory.path(), &bytes, &[key], 20).unwrap();
+        assert_eq!(snapshot.catalog.revision, 1);
+        assert_eq!(cache.status().unwrap().last_sync_unix_seconds, 10);
     }
 }

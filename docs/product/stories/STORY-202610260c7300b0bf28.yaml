@@ -26,5 +26,8 @@ tasks:
   title: Add admin authentication and local-origin job entry Implement journaled crash
     recovery and receipt object verification
   completed: true
+- id: task-2d8093f245
+  title: 'Fix QA P1: identifier validation, catalog expiry, archive size, transitions'
+  completed: true
 created_at: '2026-10-26T02:15:17+00:00'
-updated_at: '2026-10-26T06:05:38+00:00'
+updated_at: '2026-10-26T06:32:35+00:00'

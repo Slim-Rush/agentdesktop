@@ -24,6 +24,7 @@
 - [x] Report AgentState to the controller
 - [x] Add tests and update the HLD
 - [x] Add effective-config resolver with local/managed modes and If-Match Add LocalConfigValidator secret-key denial and redaction
+- [x] Fix QA P1: enforce catalog revision ordering and expiry
 
 ### [STORY-202610260c7300b0bf28] User-level agent install and uninstall jobs (macOS first)
 > Spec: docs/specs/STORY-202610260c7300b0bf28.md
@@ -35,6 +36,7 @@
 - [x] Implement uninstall receipts, dry-run, and detection
 - [x] Add diagnostics, audit, tests, and update the HLD
 - [x] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
+- [x] Fix QA P1: identifier validation, catalog expiry, archive size, transitions
 
 ## ✅ Done
 

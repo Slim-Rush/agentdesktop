@@ -331,16 +331,16 @@ impl FleetAgent for FleetAgentService {
             .await
             .map_err(internal)?
         {
+            self.database
+                .mark_job_dispatched(&job.id)
+                .await
+                .map_err(internal)?;
             sender
                 .send(Ok(ControllerMessage {
                     message: Some(controller_message::Message::AgentJob(job.to_proto())),
                 }))
                 .await
                 .map_err(|_| Status::unavailable("stream closed"))?;
-            self.database
-                .mark_job_dispatched(&job.id)
-                .await
-                .map_err(internal)?;
         }
 
         let update_sender = sender.clone();

@@ -65,3 +65,26 @@ impl AdminAuth {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, StatusCode, header};
+
+    use super::AdminAuth;
+
+    #[tokio::test]
+    async fn a_missing_token_is_unauthorized() {
+        let auth = AdminAuth::new(None, Vec::new());
+        let error = auth.authenticate(&HeaderMap::new()).await.unwrap_err();
+        assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_token_without_a_configured_provider_is_forbidden() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Bearer test".parse().unwrap());
+        let auth = AdminAuth::new(None, Vec::new());
+        let error = auth.authenticate(&headers).await.unwrap_err();
+        assert_eq!(error.0, StatusCode::FORBIDDEN);
+    }
+}

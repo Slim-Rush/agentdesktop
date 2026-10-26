@@ -13,6 +13,16 @@ use serde::{Deserialize, Serialize};
 
 const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
 
+fn valid_job_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 /// Download an artifact over HTTPS with a bounded size and timeout.
 pub async fn download_artifact(url: &str) -> anyhow::Result<Vec<u8>> {
     ensure!(url.starts_with("https://"), "artifact URL must use HTTPS");
@@ -62,6 +72,9 @@ impl JobExecutor {
         artifact: Option<&[u8]>,
         installer: &dyn Installer,
     ) -> JobStatus {
+        if !valid_job_identifier(&job.job_id) {
+            return failed(job, "invalid_job", "job id contains unsafe characters");
+        }
         if let Some(status) = self.load_status(&job.job_id)
             && is_terminal_status(status.state)
         {
@@ -88,6 +101,19 @@ impl JobExecutor {
     ) -> JobStatus {
         if job.job_id.is_empty() {
             return failed(job, "invalid_job", "job id is empty");
+        }
+        if !valid_job_identifier(&job.agent_id) {
+            return failed(job, "invalid_job", "agent id contains unsafe characters");
+        }
+        if job.catalog_id != snapshot.catalog.catalog_id {
+            return failed(
+                job,
+                "catalog_changed",
+                "job does not match the verified catalog id",
+            );
+        }
+        if snapshot.catalog.is_expired(now_unix_seconds()) {
+            return failed(job, "catalog_expired", "the verified catalog is expired");
         }
         if job.catalog_revision != snapshot.catalog.revision
             || job.catalog_sha256 != snapshot.sha256
@@ -158,6 +184,10 @@ impl JobExecutor {
     }
 
     fn store_status(&self, status: &JobStatus) {
+        if !valid_job_identifier(&status.job_id) {
+            tracing::warn!(job_id = %status.job_id, "not persisting a job with an unsafe id");
+            return;
+        }
         let path = self.status_path(&status.job_id);
         let directory = path.parent().unwrap_or_else(|| Path::new("."));
         if let Err(error) = secure_fs::ensure_private_dir(directory) {
@@ -502,5 +532,80 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("HTTPS"));
+    }
+
+    #[test]
+    fn an_unsafe_job_id_is_rejected_without_persisting() {
+        let directory = tempdir().unwrap();
+        let (snapshot, keys) = fixture(b"artifact");
+        let mut job = job(&snapshot);
+        job.job_id = "../../escape".to_owned();
+        let status = JobExecutor::new(directory.path().to_owned()).execute(
+            &job,
+            &snapshot,
+            &keys,
+            Some(b"artifact"),
+            &FakeInstaller::default(),
+        );
+        assert_eq!(status.state, JobState::Failed as i32);
+        assert_eq!(status.error_code, "invalid_job");
+        assert!(
+            !directory
+                .path()
+                .parent()
+                .unwrap()
+                .join("escape.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn an_unsafe_agent_id_is_rejected() {
+        let directory = tempdir().unwrap();
+        let (snapshot, keys) = fixture(b"artifact");
+        let mut job = job(&snapshot);
+        job.agent_id = "../escape".to_owned();
+        let status = JobExecutor::new(directory.path().to_owned()).execute(
+            &job,
+            &snapshot,
+            &keys,
+            Some(b"artifact"),
+            &FakeInstaller::default(),
+        );
+        assert_eq!(status.state, JobState::Failed as i32);
+        assert_eq!(status.error_code, "invalid_job");
+    }
+
+    #[test]
+    fn an_expired_catalog_cannot_authorize_a_job() {
+        let directory = tempdir().unwrap();
+        let (mut snapshot, keys) = fixture(b"artifact");
+        snapshot.catalog.expires_at = 1;
+        let status = JobExecutor::new(directory.path().to_owned()).execute(
+            &job(&snapshot),
+            &snapshot,
+            &keys,
+            Some(b"artifact"),
+            &FakeInstaller::default(),
+        );
+        assert_eq!(status.state, JobState::Failed as i32);
+        assert_eq!(status.error_code, "catalog_expired");
+    }
+
+    #[test]
+    fn a_catalog_id_mismatch_is_rejected() {
+        let directory = tempdir().unwrap();
+        let (snapshot, keys) = fixture(b"artifact");
+        let mut job = job(&snapshot);
+        job.catalog_id = "other".to_owned();
+        let status = JobExecutor::new(directory.path().to_owned()).execute(
+            &job,
+            &snapshot,
+            &keys,
+            Some(b"artifact"),
+            &FakeInstaller::default(),
+        );
+        assert_eq!(status.state, JobState::Failed as i32);
+        assert_eq!(status.error_code, "catalog_changed");
     }
 }
