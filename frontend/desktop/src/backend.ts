@@ -7,6 +7,11 @@ import type {
   AgentsResponse,
   Bootstrap,
   CatalogResponse,
+  ChatActionResult,
+  ChatContext,
+  ChatMessage,
+  ChatProviderInfo,
+  ChatReply,
   ConnectorSnapshot,
   DeviceUsage,
   Discovery,
@@ -114,6 +119,48 @@ export async function saveAgentConfig(
     agentId,
     revision,
     config,
+  });
+}
+
+export async function getChatProviders(): Promise<ChatProviderInfo[]> {
+  return invoke<ChatProviderInfo[]>("get_chat_providers");
+}
+
+export async function getChatContext(
+  jobId: string | null,
+): Promise<ChatContext> {
+  return invoke<ChatContext>("get_chat_context", { jobId });
+}
+
+export async function startChat(
+  requestId: string,
+  providerId: string,
+  jobId: string | null,
+  message: string,
+  history: Array<Pick<ChatMessage, "role" | "content">>,
+): Promise<ChatReply> {
+  return invoke<ChatReply>("start_chat", {
+    requestId,
+    providerId,
+    jobId,
+    message,
+    history,
+  });
+}
+
+export async function cancelChat(requestId: string): Promise<void> {
+  return invoke<void>("cancel_chat", { requestId });
+}
+
+export async function executeChatAction(
+  actionId: string,
+  jobId: string,
+  provider: string,
+): Promise<ChatActionResult> {
+  return invoke<ChatActionResult>("execute_chat_action", {
+    actionId,
+    jobId,
+    provider,
   });
 }
 

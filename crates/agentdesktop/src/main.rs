@@ -25,6 +25,8 @@ use agentdesktop_core::{
     },
 };
 use clap::{Parser, Subcommand};
+
+mod assistant;
 use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Manager,
@@ -718,15 +720,12 @@ async fn get_job(job_id: String) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("{error:#}"))
 }
 
-#[tauri::command]
-async fn start_agent_job(
-    agent_id: String,
-    action: String,
-    version: String,
+async fn post_agent_job(
+    agent_id: &str,
+    action: &str,
+    version: &str,
     dry_run: bool,
 ) -> Result<serde_json::Value, String> {
-    let agent_id = validate_path_segment(&agent_id)?;
-    let action = validate_job_action(&action)?;
     client::post_json_decode(
         &socket_path(),
         &format!("/v1/agents/{agent_id}/jobs"),
@@ -739,6 +738,18 @@ async fn start_agent_job(
     )
     .await
     .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn start_agent_job(
+    agent_id: String,
+    action: String,
+    version: String,
+    dry_run: bool,
+) -> Result<serde_json::Value, String> {
+    let agent_id = validate_path_segment(&agent_id)?;
+    let action = validate_job_action(&action)?;
+    post_agent_job(agent_id, action, &version, dry_run).await
 }
 
 #[tauri::command]
@@ -787,6 +798,326 @@ async fn refresh_inventory() -> Result<(), String> {
         .map_err(|error| format!("{error:#}"))
 }
 
+#[derive(Deserialize)]
+struct JobsResponse {
+    jobs: Vec<assistant::DaemonJob>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncStatusResponse {
+    catalog: Option<CatalogStatusResponse>,
+    local_config_revision: u64,
+}
+
+#[derive(Deserialize)]
+struct CatalogStatusResponse {
+    revision: u64,
+    stale: bool,
+}
+
+#[derive(Deserialize)]
+struct AgentsResponse {
+    agents: Vec<AgentEntryResponse>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentEntryResponse {
+    id: String,
+    display_name: String,
+    #[serde(default)]
+    configured: serde_json::Value,
+}
+
+async fn load_chat_context(job_id: Option<&str>) -> Result<assistant::ChatContext, String> {
+    let jobs: JobsResponse = client::get(&socket_path(), "/v1/jobs")
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    let sync = client::get::<SyncStatusResponse>(&socket_path(), "/v1/sync-status").await;
+    let agents = client::get::<AgentsResponse>(&socket_path(), "/v1/agents").await;
+    let mut warnings = Vec::new();
+    let (catalog_revision, catalog_stale, local_config_revision) = match &sync {
+        Ok(sync) => (
+            sync.catalog.as_ref().map(|catalog| catalog.revision),
+            sync.catalog.as_ref().is_some_and(|catalog| catalog.stale),
+            sync.local_config_revision,
+        ),
+        Err(_) => {
+            warnings.push("Daemon sync status is unavailable.".to_owned());
+            (None, false, 0)
+        }
+    };
+    let agents = match agents {
+        Ok(response) => response.agents,
+        Err(_) => {
+            warnings.push("Agent catalog is unavailable.".to_owned());
+            Vec::new()
+        }
+    };
+    let agents = agents
+        .into_iter()
+        .map(|agent| assistant::ChatAgentSummary {
+            id: agent.id,
+            display_name: agent.display_name,
+            configured: !agent.configured.is_null(),
+        })
+        .collect();
+    assistant::build_context(
+        job_id,
+        &jobs.jobs,
+        catalog_revision,
+        catalog_stale,
+        local_config_revision,
+        agents,
+        warnings,
+    )
+}
+
+#[tauri::command]
+async fn get_chat_providers() -> Result<Vec<assistant::ChatProviderInfo>, String> {
+    let discovery: Discovery = client::get(&socket_path(), "/v1/discovery")
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(assistant::resolve_providers(&discovery))
+}
+
+#[tauri::command]
+async fn get_chat_context(job_id: Option<String>) -> Result<assistant::ChatContext, String> {
+    if let Some(job_id) = &job_id {
+        validate_path_segment(job_id)?;
+    }
+    load_chat_context(job_id.as_deref()).await
+}
+
+#[tauri::command]
+async fn start_chat(
+    app: AppHandle,
+    runs: tauri::State<'_, assistant::ChatRuns>,
+    request_id: String,
+    provider_id: String,
+    job_id: Option<String>,
+    message: String,
+    history: Vec<assistant::ChatMessageInput>,
+) -> Result<assistant::ChatReply, String> {
+    if message.trim().is_empty() {
+        return Err("enter a message before sending".to_owned());
+    }
+    if message.len() > assistant::MAX_MESSAGE_BYTES {
+        return Err("assistant message is too long".to_owned());
+    }
+    if !assistant::valid_session_id(&request_id) {
+        return Err("invalid assistant request id".to_owned());
+    }
+    if history.len() > 100 {
+        return Err("assistant conversation history is too long".to_owned());
+    }
+    if let Some(job_id) = &job_id {
+        validate_path_segment(job_id)?;
+    }
+    let context = load_chat_context(job_id.as_deref()).await?;
+
+    if provider_id == "rule-based" {
+        return Ok(assistant::ChatReply {
+            message: assistant::rule_based_reply(&context),
+            proposed_actions: context.playbook.actions.clone(),
+            provider: "rule-based".to_owned(),
+            rule_based: true,
+            session_id: request_id,
+        });
+    }
+
+    if let Some(profile) = assistant::provider_profiles()
+        .iter()
+        .find(|profile| profile.id == provider_id && !profile.enabled)
+    {
+        return Err(profile
+            .unavailable_reason
+            .unwrap_or("assistant provider is not available")
+            .to_owned());
+    }
+    let profile = assistant::provider_profiles()
+        .iter()
+        .find(|profile| profile.id == provider_id && profile.enabled)
+        .ok_or_else(|| format!("assistant provider {provider_id:?} is not available"))?;
+    let discovery: Discovery = client::get(&socket_path(), "/v1/discovery")
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    if !assistant::resolve_providers(&discovery)
+        .iter()
+        .any(|provider| provider.id == profile.id)
+    {
+        return Err(format!(
+            "assistant provider {provider_id:?} is not installed or verified"
+        ));
+    }
+    let agent = discovery
+        .agents
+        .iter()
+        .find(|agent| agent.kind == profile.discovery_kind)
+        .ok_or_else(|| format!("assistant provider {provider_id:?} is not installed"))?;
+    let prompt = assistant::build_prompt(&context, &history, &message);
+    let working_directory = assistant_workdir(&app)?;
+    let receiver = runs.register(&request_id)?;
+    let result = assistant::run_provider(
+        &agent.executable,
+        &working_directory,
+        &profile.argv(),
+        if profile.uses_stdin() {
+            Some(&prompt)
+        } else {
+            None
+        },
+        profile.timeout,
+        profile.max_output_bytes,
+        Some(receiver),
+    )
+    .await;
+    runs.finish(&request_id);
+    let output = result.map_err(|error| error.to_string())?;
+    let mut proposed = assistant::parse_action_ids(&output.text, &context.playbook.actions);
+    if proposed.is_empty() {
+        proposed = context.playbook.actions.clone();
+    }
+    Ok(assistant::ChatReply {
+        message: output.text,
+        proposed_actions: proposed,
+        provider: profile.id.to_owned(),
+        rule_based: false,
+        session_id: request_id,
+    })
+}
+
+#[tauri::command]
+fn cancel_chat(
+    runs: tauri::State<'_, assistant::ChatRuns>,
+    request_id: String,
+) -> Result<(), String> {
+    if !assistant::valid_session_id(&request_id) {
+        return Err("invalid assistant request id".to_owned());
+    }
+    let _ = runs.cancel(&request_id);
+    Ok(())
+}
+
+fn assistant_workdir(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("cannot resolve assistant data directory: {error}"))?
+        .join("assistant-workdir");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("cannot create assistant work directory: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("cannot secure assistant work directory: {error}"))?;
+    }
+    Ok(directory)
+}
+
+fn write_assistant_audit(
+    app: &AppHandle,
+    provider: &str,
+    job_id: &str,
+    action: &str,
+    outcome: &str,
+) {
+    if let Err(error) = assistant_audit_path(app).and_then(|path| {
+        assistant::append_audit(
+            &path,
+            &assistant::AuditRecord::now(provider, job_id, action, outcome),
+        )
+        .map_err(|error| error.to_string())
+    }) {
+        eprintln!("could not write assistant audit record: {error}");
+    }
+}
+
+fn assistant_audit_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("cannot resolve assistant data directory: {error}"))?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("cannot create assistant data directory: {error}"))?;
+    Ok(assistant::audit_path(&directory))
+}
+
+#[tauri::command]
+async fn execute_chat_action(
+    app: AppHandle,
+    action_id: String,
+    job_id: String,
+    provider: String,
+) -> Result<assistant::ActionResult, String> {
+    let job_id = validate_path_segment(&job_id)?;
+    let context = load_chat_context(Some(job_id)).await?;
+    let job = context
+        .job
+        .as_ref()
+        .ok_or_else(|| "the selected job is unavailable".to_owned())?;
+    let kind = assistant::validate_action(&action_id, job)?;
+    let provider = if provider == "rule-based"
+        || assistant::provider_profiles()
+            .iter()
+            .any(|profile| profile.id == provider)
+    {
+        provider
+    } else {
+        "unknown".to_owned()
+    };
+    let result: Result<(&str, String), String> = async {
+        Ok(match kind {
+            assistant::ActionKind::RetryInstall => {
+                let agent_id = validate_path_segment(&job.agent_id)?;
+                post_agent_job(agent_id, "install", &job.version, false).await?;
+                (
+                    "started",
+                    format!("Install job started for {}.", job.agent_id),
+                )
+            }
+            assistant::ActionKind::RetryUninstall => {
+                let agent_id = validate_path_segment(&job.agent_id)?;
+                post_agent_job(agent_id, "uninstall", &job.version, false).await?;
+                (
+                    "started",
+                    format!("Uninstall job started for {}.", job.agent_id),
+                )
+            }
+            assistant::ActionKind::RefreshCatalog => {
+                client::post_json(&socket_path(), "/v1/catalog/sync", &())
+                    .await
+                    .map_err(|error| format!("{error:#}"))?;
+                ("requested", "Catalog refresh requested.".to_owned())
+            }
+            assistant::ActionKind::RefreshInventory => {
+                client::post_json(&socket_path(), "/v1/inventory/refresh", &())
+                    .await
+                    .map_err(|error| format!("{error:#}"))?;
+                ("requested", "Inventory refresh requested.".to_owned())
+            }
+            assistant::ActionKind::OpenSettings => ("navigated", "Settings opened.".to_owned()),
+        })
+    }
+    .await;
+    let (outcome, detail) = match result {
+        Ok(value) => value,
+        Err(error) => {
+            write_assistant_audit(&app, &provider, job_id, &action_id, "error");
+            return Err(error);
+        }
+    };
+    write_assistant_audit(&app, &provider, job_id, &action_id, outcome);
+    Ok(assistant::ActionResult {
+        action_id,
+        outcome: outcome.to_owned(),
+        detail,
+        navigate: (kind == assistant::ActionKind::OpenSettings).then(|| "settings".to_owned()),
+    })
+}
+
 fn run_desktop() -> anyhow::Result<()> {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -795,6 +1126,7 @@ fn run_desktop() -> anyhow::Result<()> {
         .setup(|app| {
             let settings = load_settings(app.handle())?;
             app.manage(StartupWindow(AtomicBool::new(settings.open_on_startup)));
+            app.manage(assistant::ChatRuns::default());
             app.handle().set_theme(settings.color_mode.native_theme());
 
             #[cfg(target_os = "macos")]
@@ -880,7 +1212,12 @@ fn run_desktop() -> anyhow::Result<()> {
             save_agent_config,
             get_sync_status,
             refresh_catalog,
-            refresh_inventory
+            refresh_inventory,
+            get_chat_providers,
+            get_chat_context,
+            start_chat,
+            cancel_chat,
+            execute_chat_action
         ])
         .run(tauri::generate_context!())?;
     Ok(())

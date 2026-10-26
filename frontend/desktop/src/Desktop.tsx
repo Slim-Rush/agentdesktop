@@ -1,12 +1,15 @@
 import { ThemeProvider } from "@agentdesktop/ui";
+import { useState } from "react";
 
 import { DesktopShell } from "./components/DesktopShell";
 import { PageBoundary } from "./components/PageBoundary";
 import { StatusLoading } from "./components/StatusLoading";
 import { useAgents } from "./useAgents";
-import { useDesktopModel } from "./useDesktopModel";
+import { useAssistant } from "./useAssistant";
+import { useDesktopModel, type View } from "./useDesktopModel";
 import { useDeviceUsage } from "./useDeviceUsage";
 import { AgentsView } from "./views/AgentsView";
+import { AssistantView } from "./views/AssistantView";
 import { EnrollmentView } from "./views/EnrollmentView";
 import { SettingsView } from "./views/SettingsView";
 import { StatusView } from "./views/StatusView";
@@ -16,6 +19,20 @@ import { UsageView } from "./views/UsageView";
 export function Desktop() {
   const model = useDesktopModel();
   const agents = useAgents(model.view === "agents");
+  const [assistantJobId, setAssistantJobId] = useState<string | null>(null);
+  const assistant = useAssistant(
+    model.view === "assistant",
+    assistantJobId,
+    () => model.navigate("settings"),
+  );
+  const openAssistant = (jobId: string | null) => {
+    setAssistantJobId(jobId);
+    model.navigate("assistant");
+  };
+  const navigate = (view: View) => {
+    if (view === "assistant") setAssistantJobId(null);
+    model.navigate(view);
+  };
   const showingUsage =
     model.view === "usage" && model.showUsage && !model.needsEnrollment;
   const deviceUsage = useDeviceUsage(showingUsage);
@@ -29,7 +46,7 @@ export function Desktop() {
         fullWidth={model.needsEnrollment && model.view !== "settings"}
         isRefreshing={model.isRefreshing}
         notice={model.notice}
-        onNavigate={model.navigate}
+        onNavigate={navigate}
         onRefresh={() => {
           model.refresh();
           if (showingUsage) deviceUsage.reload();
@@ -70,6 +87,7 @@ export function Desktop() {
               discovery={model.discovery}
               isLoggingOut={model.isLoggingOut}
               onCopy={model.copyDiagnostics}
+              onDiagnose={() => openAssistant(null)}
               onLogout={model.logout}
             />
           ) : model.view === "agents" ? (
@@ -87,11 +105,36 @@ export function Desktop() {
               busyAgent={agents.busyAgent}
               onStartJob={agents.startJob}
               onDryRun={agents.dryRunUninstall}
+              onDiagnose={openAssistant}
               getConfig={agents.getAgentConfig}
               saveConfig={agents.saveAgentConfig}
               onRefresh={agents.load}
               onRefreshCatalog={agents.refreshCatalog}
               onRefreshInventory={agents.refreshInventory}
+            />
+          ) : model.view === "assistant" ? (
+            <AssistantView
+              providers={assistant.providers}
+              providerError={assistant.providerError}
+              selectedProvider={assistant.selectedProvider}
+              onProviderChange={assistant.chooseProvider}
+              context={assistant.context}
+              contextLoading={assistant.contextLoading}
+              contextError={assistant.contextError}
+              messages={assistant.messages}
+              sending={assistant.sending}
+              error={assistant.error}
+              pendingAction={assistant.pendingAction}
+              actionBusy={assistant.actionBusy}
+              actionNotice={assistant.actionNotice}
+              onSend={assistant.send}
+              onRetry={assistant.retry}
+              onCancel={assistant.cancel}
+              onClear={assistant.clear}
+              onRefreshContext={assistant.load}
+              onReviewAction={assistant.requestAction}
+              onConfirmAction={assistant.confirmAction}
+              onCancelAction={assistant.cancelAction}
             />
           ) : showingUsage ? (
             <UsageView

@@ -3,6 +3,7 @@ import agentdesktopLogo from "@brand/logo.svg";
 import agentdesktopLogoLight from "@brand/logo-light.svg";
 import agentdesktopMark from "@brand/mark.svg";
 import {
+  Bot,
   ChartColumn,
   Gauge,
   Laptop,
@@ -83,6 +84,15 @@ export function DesktopShell({
             >
               <Package size={18} />
               <span className="desktop-nav-label">Agents</span>
+            </button>
+            <button
+              type="button"
+              className={view === "assistant" ? "active" : ""}
+              aria-current={view === "assistant" ? "page" : undefined}
+              onClick={() => onNavigate("assistant")}
+            >
+              <Bot size={18} />
+              <span className="desktop-nav-label">Assistant</span>
             </button>
             {showUsage ? (
               <button

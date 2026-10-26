@@ -2,16 +2,6 @@
 
 ## 📋 Backlog
 
-### [STORY-20261026ae47f2938d17] Chat-based failure diagnosis using local coding agents
-> Spec: docs/specs/STORY-20261026ae47f2938d17.md
-
-- [ ] Implement assistant provider adapter with argv-only runner
-- [ ] Add chat, context, and action Tauri commands
-- [ ] Build Assistant view and failure entry points
-- [ ] Implement playbooks and confirmed actions
-- [ ] Add audit and automated assistant tests
-- [ ] Update target architecture diagram
-
 ## 🔄 In Progress
 
 ## 🧪 Verifying
@@ -61,4 +51,14 @@
 - [x] Implement per-agent config editor with If-Match
 - [x] Add sync status and refresh actions
 - [x] Add Storybook/Vitest coverage
+- [x] Update target architecture diagram
+
+### [STORY-20261026ae47f2938d17] Chat-based failure diagnosis using local coding agents
+> Spec: docs/specs/STORY-20261026ae47f2938d17.md
+
+- [x] Implement assistant provider adapter with argv-only runner
+- [x] Add chat, context, and action Tauri commands
+- [x] Build Assistant view and failure entry points
+- [x] Implement playbooks and confirmed actions
+- [x] Add audit and automated assistant tests
 - [x] Update target architecture diagram

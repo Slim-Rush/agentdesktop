@@ -31,7 +31,13 @@ import type {
   Settings,
 } from "./types";
 
-export type View = "home" | "tools" | "usage" | "settings" | "agents";
+export type View =
+  | "home"
+  | "tools"
+  | "usage"
+  | "settings"
+  | "agents"
+  | "assistant";
 export type Notice = { tone: "success" | "error"; message: string } | null;
 
 type StatusSource = "connector" | "managedDevice" | "discovery" | "programs";
@@ -414,7 +420,9 @@ export function useDesktopModel() {
             ? "Usage"
             : view === "agents"
               ? "Agents"
-              : "Tools";
+              : view === "assistant"
+                ? "Assistant"
+                : "Tools";
 
   return {
     bootstrap,

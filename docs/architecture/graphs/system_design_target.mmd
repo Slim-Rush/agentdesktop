@@ -5,6 +5,9 @@ graph TB
     subgraph Workstation["Developer workstation"]
         Desktop["Agent Desktop<br/>(Tauri, crates/agentdesktop)"]
         AgentsView["Agents view<br/>(catalog, jobs, config)"]:::target
+        AssistantView["Assistant view<br/>(chat, playbooks, actions)"]:::target
+        Provider["Local provider CLI<br/>(argv only, no shell)"]:::target
+        Audit["Assistant audit<br/>(action metadata only)"]:::target
         Daemon["Agent daemon<br/>(crates/agent)"]
         Client["Local client<br/>(crates/client)"]
         CatalogCache["Catalog cache<br/>(signed, last-known-good)"]:::target
@@ -41,7 +44,13 @@ graph TB
     Developer --> Desktop
     Desktop --> Client
     Desktop --> AgentsView
+    Desktop --> AssistantView
     AgentsView -.->|"catalog/agents/jobs/config"| Daemon
+    AgentsView -.->|"failed job"| AssistantView
+    AssistantView -.->|"redacted context +<br/>confirmed actions"| Daemon
+    AssistantView -->|"argv + bounded output"| Provider
+    AssistantView --> Audit
+    Provider -.->|"existing CLI configuration"| Tools
     Client -->|"Unix socket / named pipe<br/>HTTP JSON"| Daemon
     Daemon -->|"discover + reconcile"| Tools
     Daemon -->|"discover"| DiscoveryOnly

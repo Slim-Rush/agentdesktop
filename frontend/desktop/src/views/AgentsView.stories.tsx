@@ -107,6 +107,7 @@ const meta = {
     jobPollError: null,
     busyAgent: null,
     onStartJob: fn(),
+    onDiagnose: fn(),
     onDryRun: fn(async () => plan),
     getConfig: fn(async () => config),
     saveConfig: fn(async () => config),
@@ -203,6 +204,26 @@ export const RunningJob: Story = {
     await expect(
       canvas.getByRole("button", { name: "Install" }),
     ).toBeDisabled();
+  },
+};
+
+export const FailedJob: Story = {
+  args: {
+    jobs: [
+      {
+        jobId: "job-2",
+        attempt: 1,
+        state: 7,
+        progressPercent: 0,
+        errorCode: "checksum_mismatch",
+        errorMessage: "artifact checksum mismatch",
+        diagnosticsJson: "{}",
+      },
+    ],
+  },
+  play: async ({ args, canvas }) => {
+    await userEvent.click(canvas.getByRole("button", { name: "Diagnose" }));
+    await expect(args.onDiagnose).toHaveBeenCalledWith("job-2");
   },
 };
 

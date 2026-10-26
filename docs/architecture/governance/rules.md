@@ -90,7 +90,7 @@ document should have stated. Do not rewrite or delete past Lessons.
 
 ## 8. Invariants
 
-- All 492+ tests must pass.
+- All 529+ tests must pass.
 - `make lint` and `pnpm check:lint` must pass.
 - `make generate-schema` must leave `schema/` unchanged.
 - No secret material in the repository or its history.

@@ -253,3 +253,80 @@ export interface DryRunPlan {
   dryRun: true;
   paths: string[];
 }
+
+/** A discovered coding agent whose existing model configuration can answer chat. */
+export interface ChatProviderInfo {
+  id: string;
+  displayName: string;
+  available: boolean;
+  readOnlyMode: string;
+  unavailableReason: string | null;
+}
+
+export interface ChatAction {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface ChatPlaybook {
+  errorCode: string;
+  explanation: string;
+  actions: ChatAction[];
+}
+
+export interface ChatJobSummary {
+  jobId: string;
+  agentId: string;
+  version: string;
+  action: string;
+  state: number;
+  errorCode: string;
+  errorMessage: string;
+  diagnostics: string;
+  catalogRevision: number | null;
+}
+
+export interface ChatAgentSummary {
+  id: string;
+  displayName: string;
+  configured: boolean;
+}
+
+/** Redacted data that may be sent to the selected local provider. */
+export interface ChatContext {
+  job: ChatJobSummary | null;
+  recentJobs: ChatJobSummary[];
+  agents: ChatAgentSummary[];
+  catalogRevision: number | null;
+  catalogStale: boolean;
+  localConfigRevision: number;
+  warnings: string[];
+  preview: string;
+  playbook: ChatPlaybook;
+}
+
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  actions?: ChatAction[];
+  tone?: "normal" | "error";
+}
+
+export interface ChatReply {
+  message: string;
+  proposedActions: ChatAction[];
+  provider: string;
+  ruleBased: boolean;
+  sessionId: string;
+}
+
+export interface ChatActionResult {
+  actionId: string;
+  outcome: string;
+  detail: string;
+  navigate: string | null;
+}

@@ -37,6 +37,7 @@ export interface AgentsViewProps {
   jobPollError: string | null;
   busyAgent: string | null;
   onStartJob: (agentId: string, action: AgentAction, version: string) => void;
+  onDiagnose: (jobId: string) => void;
   onDryRun: (agentId: string, version: string) => Promise<DryRunPlan>;
   getConfig: (agentId: string) => Promise<AgentConfigResponse>;
   saveConfig: (
@@ -180,6 +181,7 @@ export function AgentsView({
   jobPollError,
   busyAgent,
   onStartJob,
+  onDiagnose,
   onDryRun,
   getConfig,
   saveConfig,
@@ -383,6 +385,15 @@ export function AgentsView({
                 {job.errorCode ? <code>{job.errorCode}</code> : null}
                 {job.errorMessage ? (
                   <span>{redactPaths(job.errorMessage)}</span>
+                ) : null}
+                {job.state === 7 ? (
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => onDiagnose(job.jobId)}
+                  >
+                    Diagnose
+                  </button>
                 ) : null}
               </li>
             ))}

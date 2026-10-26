@@ -1370,3 +1370,214 @@ p {
   background: var(--danger-button-hover-strong);
   border-color: var(--danger-button-hover-strong);
 }
+
+.status-hero-action {
+  margin-top: 10px;
+}
+
+.assistant-provider {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-provider label,
+.assistant-composer label {
+  font-size: 12px;
+  color: var(--foreground-secondary);
+}
+
+.assistant-provider select {
+  width: min(360px, 100%);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.assistant-context summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.assistant-context summary span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.assistant-context summary small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.assistant-context-preview {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px / 1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.assistant-playbook h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.assistant-playbook > p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.assistant-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.assistant-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.assistant-action strong {
+  font-size: 13px;
+}
+
+.assistant-action p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assistant-chat {
+  padding: 0;
+  overflow: hidden;
+}
+
+.assistant-messages {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.assistant-welcome {
+  display: flex;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.assistant-welcome strong {
+  color: var(--ink);
+}
+
+.assistant-welcome p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.assistant-message {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.assistant-message-user {
+  background: var(--accent-soft);
+}
+
+.assistant-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.assistant-message-role {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.assistant-thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.assistant-thinking .button {
+  margin-left: auto;
+}
+
+.assistant-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 12px;
+}
+
+.assistant-error .button {
+  margin-left: auto;
+}
+
+.assistant-composer {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.assistant-composer textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+
+.assistant-composer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+  .assistant-action {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .assistant-action .button {
+    width: 100%;
+  }
+}

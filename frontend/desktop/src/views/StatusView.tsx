@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  Bot,
   Check,
   Copy,
   Gauge,
@@ -28,6 +29,7 @@ export interface StatusViewProps {
   isLoggingOut: boolean;
   managedDevice: ManagedDeviceSnapshot | null;
   onCopy: () => void;
+  onDiagnose: () => void;
   onLogout: () => void;
 }
 
@@ -91,6 +93,7 @@ export function StatusView({
   discovery,
   isLoggingOut,
   onCopy,
+  onDiagnose,
   onLogout,
 }: StatusViewProps) {
   const runtime = connector?.runtime;
@@ -137,6 +140,15 @@ export function StatusView({
                 ? "Your organization settings and local tool inventory are active."
                 : (connector?.detail ?? "Review the status below.")}
           </p>
+          {!ready ? (
+            <button
+              className="button button-secondary status-hero-action"
+              type="button"
+              onClick={onDiagnose}
+            >
+              <Bot size={14} /> Ask the assistant
+            </button>
+          ) : null}
         </div>
       </div>
 
