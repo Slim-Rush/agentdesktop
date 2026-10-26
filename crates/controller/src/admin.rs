@@ -103,7 +103,11 @@ pub async fn serve(
     Ok(())
 }
 
-async fn overview(State(state): State<AdminState>) -> Result<Json<Overview>, AdminError> {
+async fn overview(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+) -> Result<Json<Overview>, AdminError> {
+    state.auth.require_if_configured(&headers).await?;
     let devices = state.database.list_devices().await?;
     let now = unix_time_seconds();
     let online_devices = devices
@@ -128,14 +132,20 @@ async fn overview(State(state): State<AdminState>) -> Result<Json<Overview>, Adm
     }))
 }
 
-async fn devices(State(state): State<AdminState>) -> Result<Json<Vec<DeviceSummary>>, AdminError> {
+async fn devices(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DeviceSummary>>, AdminError> {
+    state.auth.require_if_configured(&headers).await?;
     Ok(Json(state.database.list_devices().await?))
 }
 
 async fn device(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<Json<DeviceDetail>, AdminError> {
+    state.auth.require_if_configured(&headers).await?;
     state
         .database
         .get_device(&device_id)
@@ -146,8 +156,10 @@ async fn device(
 
 async fn delete_device(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<StatusCode, AdminError> {
+    state.auth.authenticate(&headers).await?;
     if !state.database.delete_device(&device_id).await? {
         return Err(AdminError::NotFound);
     }
@@ -155,14 +167,20 @@ async fn delete_device(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn settings(State(state): State<AdminState>) -> Json<ControllerSettings> {
-    Json(state.settings)
+async fn settings(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+) -> Result<Json<ControllerSettings>, AdminError> {
+    state.auth.require_if_configured(&headers).await?;
+    Ok(Json(state.settings))
 }
 
 async fn usage_report(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Query(query): Query<UsageQuery>,
 ) -> Result<Json<UsageReport>, AdminError> {
+    state.auth.require_if_configured(&headers).await?;
     let labels = usage::labels(&state.database).await?;
     Ok(Json(
         agentdesktop_usage::report(
@@ -182,7 +200,9 @@ struct ActiveDaemonConfig {
 
 async fn daemon_config(
     State(state): State<AdminState>,
+    headers: HeaderMap,
 ) -> Result<Json<ActiveDaemonConfig>, AdminError> {
+    state.auth.require_if_configured(&headers).await?;
     let config = state
         .daemon_config
         .current()
@@ -210,6 +230,9 @@ async fn create_job(
     Json(request): Json<CreateJobRequest>,
 ) -> Result<Json<JobRecord>, AdminError> {
     let actor = state.auth.authenticate(&headers).await?;
+    if !state.database.device_exists(&device_id).await? {
+        return Err(AdminError::NotFound);
+    }
     let snapshot = state
         .catalog
         .current()

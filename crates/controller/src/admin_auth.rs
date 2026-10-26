@@ -32,6 +32,18 @@ impl AdminAuth {
         }
     }
 
+    /// Enforce authentication when an operator has configured it. Without an
+    /// OIDC provider or allowlist the admin listener remains loopback-only.
+    pub async fn require_if_configured(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<(), (StatusCode, &'static str)> {
+        if self.oidc.is_some() && !self.allowed_subjects.is_empty() {
+            self.authenticate(headers).await.map(|_| ())?;
+        }
+        Ok(())
+    }
+
     /// Authenticate an `Authorization: Bearer <OIDC access token>` request.
     /// Missing OIDC configuration or an empty allowlist fails closed.
     pub async fn authenticate(

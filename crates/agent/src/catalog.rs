@@ -9,7 +9,9 @@ use std::{
     sync::Arc,
 };
 
-use agentdesktop_core::catalog::{CatalogPublicKey, CatalogSnapshot, SignedCatalog};
+use agentdesktop_core::catalog::{
+    CatalogPublicKey, CatalogSnapshot, MAX_CATALOG_BYTES, SignedCatalog,
+};
 use anyhow::{Context, bail, ensure};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -107,6 +109,11 @@ impl CatalogCache {
         keys: &[CatalogPublicKey],
         now_unix_seconds: u64,
     ) -> anyhow::Result<Arc<CatalogSnapshot>> {
+        ensure!(
+            signed_json.len() <= MAX_CATALOG_BYTES,
+            "catalog exceeds the {} byte limit",
+            MAX_CATALOG_BYTES
+        );
         let signed: SignedCatalog =
             serde_json::from_slice(signed_json).context("parse signed catalog")?;
         let snapshot = Arc::new(signed.verify(keys).context("verify signed catalog")?);
@@ -238,6 +245,15 @@ mod tests {
                 public_key: base64::engine::general_purpose::STANDARD.encode(public_key),
             },
         )
+    }
+
+    #[test]
+    fn an_oversized_catalog_is_rejected() {
+        let directory = tempdir().unwrap();
+        let bytes = vec![0_u8; agentdesktop_core::catalog::MAX_CATALOG_BYTES + 1];
+        let mut cache = CatalogCache::default();
+        let error = cache.replace(directory.path(), &bytes, &[], 0).unwrap_err();
+        assert!(error.to_string().contains("byte limit"));
     }
 
     #[test]

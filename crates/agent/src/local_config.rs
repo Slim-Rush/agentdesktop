@@ -258,8 +258,18 @@ fn is_secret_key(key: &str) -> bool {
             | "privatekey"
             | "clientsecret"
             | "cookie"
+            | "cookies"
             | "session"
-    )
+    ) || normalized.ends_with("apikey")
+        || normalized.ends_with("token")
+        || normalized.ends_with("secret")
+        || normalized.ends_with("password")
+        || normalized.ends_with("credential")
+        || normalized.ends_with("privatekey")
+        || normalized.ends_with("headers")
+        || normalized.ends_with("environment")
+        || normalized.ends_with("cookie")
+        || normalized.ends_with("cookies")
 }
 
 #[cfg(test)]
@@ -313,6 +323,9 @@ programs:
         assert!(is_secret_key("api_key"));
         assert!(is_secret_key("Authorization"));
         assert!(is_secret_key("headers"));
+        assert!(is_secret_key("x-api-key"));
+        assert!(is_secret_key("x-auth-token"));
+        assert!(is_secret_key("customHeaders"));
         assert!(!is_secret_key("maxTokens"));
         assert!(!is_secret_key("theme"));
     }

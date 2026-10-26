@@ -2,8 +2,10 @@
 
 use std::{path::Path, sync::Arc};
 
-use agentdesktop_core::catalog::{CatalogPublicKey, CatalogSnapshot, SignedCatalog};
-use anyhow::Context;
+use agentdesktop_core::catalog::{
+    CatalogPublicKey, CatalogSnapshot, MAX_CATALOG_BYTES, SignedCatalog,
+};
+use anyhow::{Context, ensure};
 
 /// The verified catalog served to enrolled devices. The file is loaded once at
 /// startup; a later upload or admin API is a separate Story.
@@ -17,6 +19,11 @@ impl CatalogStore {
     pub fn load(path: &Path, keys: &[CatalogPublicKey]) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("read agent catalog {}", path.display()))?;
+        ensure!(
+            bytes.len() <= MAX_CATALOG_BYTES,
+            "agent catalog exceeds the {} byte limit",
+            MAX_CATALOG_BYTES
+        );
         let signed: SignedCatalog =
             serde_json::from_slice(&bytes).context("parse signed agent catalog")?;
         let snapshot = signed.verify(keys).context("verify signed agent catalog")?;

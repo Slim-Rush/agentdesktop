@@ -72,6 +72,8 @@ impl MacosInstaller {
         }
 
         let agent_dir = self.agent_dir(&entry.id);
+        ensure_no_symlink_path(&agent_dir, &self.state_dir, true)?;
+        ensure_no_symlink_path(&self.home.join(".local/bin"), &self.home, true)?;
         secure_fs::ensure_private_dir(&agent_dir)?;
         let staging = agent_dir.join(format!(".staging-{job_id}"));
         if staging.exists() {
@@ -180,6 +182,15 @@ impl MacosInstaller {
             "refusing to remove a path outside the managed roots: {}",
             path.display()
         );
+        ensure_no_symlink_path(&agent_dir, &self.state_dir, true)?;
+        ensure_no_symlink_path(&launcher_dir, &self.home, true)?;
+        if path.starts_with(&agent_dir) {
+            ensure_no_symlink_path(path, &agent_dir, true)?;
+        } else {
+            // The launcher itself is a managed symlink; only its ancestors
+            // must be symlink-free.
+            ensure_no_symlink_path(path, &launcher_dir, false)?;
+        }
         Ok(())
     }
 
@@ -231,6 +242,28 @@ impl MacosInstaller {
         }
         Ok(())
     }
+}
+
+fn ensure_no_symlink_path(path: &Path, root: &Path, check_self: bool) -> anyhow::Result<()> {
+    let mut current = if check_self {
+        Some(path)
+    } else {
+        path.parent()
+    };
+    while let Some(candidate) = current {
+        if let Ok(metadata) = candidate.symlink_metadata() {
+            ensure!(
+                !metadata.file_type().is_symlink(),
+                "managed path has a symlink ancestor: {}",
+                candidate.display()
+            );
+        }
+        if candidate == root {
+            break;
+        }
+        current = candidate.parent();
+    }
+    Ok(())
 }
 
 fn remove_old_dirs(agent_dir: &Path) {
@@ -507,6 +540,27 @@ mod tests {
         let artifact = archive(&[("claude", b"0123456789")]);
         let error = super::extract_archive_with_limit(&artifact, staging.path(), 5).unwrap_err();
         assert!(error.to_string().contains("uncompressed size"));
+    }
+
+    #[test]
+    fn a_symlink_ancestor_is_refused() {
+        let home = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let alias = state.path().join("alias");
+        std::os::unix::fs::symlink(state.path(), &alias).unwrap();
+        let installer = MacosInstaller::new(home.path().to_owned(), alias);
+        let agent_dir = installer.agent_dir("claude-code");
+        let receipt = Receipt {
+            agent_id: "claude-code".to_owned(),
+            version: "1.0.0".to_owned(),
+            binary_path: agent_dir.join("1.0.0/claude"),
+            launcher_path: home.path().join(".local/bin/claude-code"),
+            artifact_sha256: "a".repeat(64),
+            binary_sha256: "b".repeat(64),
+            installed_at_unix_seconds: 1,
+        };
+        let error = installer.uninstall(&receipt, false).unwrap_err();
+        assert!(error.to_string().contains("symlink ancestor"));
     }
 
     #[test]

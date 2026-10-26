@@ -303,6 +303,14 @@ impl Database {
         Ok(())
     }
 
+    pub async fn device_exists(&self, device_id: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn device_principal(&self, device_id: &str) -> anyhow::Result<DevicePrincipal> {
         let (issuer, subject, idp_claims_json): (String, String, Option<String>) = sqlx::query_as(
             "SELECT enrolled_by_issuer, enrolled_by_subject, idp_claims_json
@@ -994,6 +1002,8 @@ mod tests {
             .enroll_device("device", "host", "issuer", "subject", None)
             .await
             .expect("enroll device");
+        assert!(database.device_exists("device").await.unwrap());
+        assert!(!database.device_exists("missing").await.unwrap());
         let job = NewJob {
             device_id: "device".to_owned(),
             idempotency_key: "idem".to_owned(),

@@ -27,6 +27,7 @@ fn valid_job_identifier(value: &str) -> bool {
 pub async fn download_artifact(url: &str) -> anyhow::Result<Vec<u8>> {
     ensure!(url.starts_with("https://"), "artifact URL must use HTTPS");
     let client = reqwest::Client::builder()
+        .https_only(true)
         .timeout(std::time::Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()?;
@@ -285,14 +286,19 @@ fn failed(job: &AgentJob, code: &str, message: &str) -> JobStatus {
         progress_percent: 0,
         error_code: code.to_owned(),
         error_message: message.to_owned(),
-        diagnostics_json: diagnostics(),
+        diagnostics_json: diagnostics(job),
     }
 }
 
-fn diagnostics() -> String {
+fn diagnostics(job: &AgentJob) -> String {
     serde_json::json!({
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
+        "agentId": job.agent_id,
+        "version": job.version,
+        "action": job.action,
+        "catalogRevision": job.catalog_revision,
+        "stderrTail": "",
     })
     .to_string()
 }

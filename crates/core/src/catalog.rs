@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+/// Maximum accepted signed-catalog size. The controller and daemon both
+/// enforce it before parsing.
+pub const MAX_CATALOG_BYTES: usize = 1024 * 1024;
+
 /// A catalog of installable agents. The signature covers exactly this value.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
