@@ -1,0 +1,5 @@
+# Host-specific overrides for this terminal.
+# Project-wide policy lives in the shared pactkit.yaml at the project
+# root; every key here overrides it, and an omitted key inherits it.
+# This file starts empty on purpose — add only what is specific to you.
+schema_version: 1

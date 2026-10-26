@@ -1,0 +1,22 @@
+schema_version: 1
+id: STORY-202610230bbca14eaf4e
+title: Reverse-engineer the Agentdesktop architecture baseline
+spec_path: docs/specs/STORY-202610230bbca14eaf4e.md
+status: backlog
+tasks:
+- id: task-02a2966ac3
+  title: Write architecture overview (context, containers, crates, interfaces, flows,
+    security, build)
+  completed: false
+- id: task-2b8f4da6cc
+  title: Finalize system_design.mmd container diagram
+  completed: false
+- id: task-82cb5d7614
+  title: Write test-case index mapping interfaces and flows to automated or manual
+    checks
+  completed: false
+- id: task-7c9d990a6d
+  title: Reconcile Spec evidence and open questions; verify the diff is docs-only
+  completed: false
+created_at: '2026-10-23T06:41:50+00:00'
+updated_at: '2026-10-23T06:41:50+00:00'

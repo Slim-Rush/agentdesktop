@@ -21,3 +21,7 @@
 # Local agent tooling
 /.agents/
 /.codex/
+/.pactkit/
+/.codegraph/
+.claude/.settings.json.lock
+.claude/settings.local.json
