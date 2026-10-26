@@ -25,6 +25,7 @@ use crate::{
     database::{Database, DevicePrincipal},
     device_ca::DeviceCertificateIssuer,
     gateway_jwt::GatewayJwtIssuer,
+    jobs::JobState as LocalJobState,
     oidc::{OidcPrincipal, OidcProvider},
 };
 
@@ -288,10 +289,15 @@ impl FleetAgent for FleetAgentService {
         request: Request<ListPendingJobsRequest>,
     ) -> Result<Response<ListPendingJobsResponse>, Status> {
         let device_id = self.authenticate_device(&request).await?;
-        let _ = device_id;
-        // Job persistence is added by the next change; the RPC is present so a
-        // daemon can reconnect without a protocol error.
-        Ok(Response::new(ListPendingJobsResponse { jobs: Vec::new() }))
+        let jobs = self
+            .database
+            .pending_jobs(&device_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|job| job.to_proto())
+            .collect();
+        Ok(Response::new(ListPendingJobsResponse { jobs }))
     }
 
     async fn connect(
@@ -317,6 +323,24 @@ impl FleetAgent for FleetAgentService {
                 }))
                 .await
                 .map_err(|_| Status::unavailable("stream closed"))?;
+        }
+        // Deliver unfinished jobs first; a reconnect resends non-terminal rows.
+        for job in self
+            .database
+            .pending_jobs(&authenticated_device_id)
+            .await
+            .map_err(internal)?
+        {
+            sender
+                .send(Ok(ControllerMessage {
+                    message: Some(controller_message::Message::AgentJob(job.to_proto())),
+                }))
+                .await
+                .map_err(|_| Status::unavailable("stream closed"))?;
+            self.database
+                .mark_job_dispatched(&job.id)
+                .await
+                .map_err(internal)?;
         }
 
         let update_sender = sender.clone();
@@ -617,13 +641,41 @@ async fn handle_agent_message(
             );
         }
         Some(agent_message::Message::JobStatus(status)) => {
-            debug!(
-                device_id,
-                job_id = %status.job_id,
-                attempt = status.attempt,
-                state = status.state,
-                "received job status"
-            );
+            let Some(state) = LocalJobState::from_proto(status.state) else {
+                warn!(
+                    device_id,
+                    job_id = %status.job_id,
+                    state = status.state,
+                    "ignored job status with an unknown state"
+                );
+                return Ok(());
+            };
+            let updated = database
+                .update_job_status(
+                    device_id,
+                    &status.job_id,
+                    status.attempt,
+                    state,
+                    &status.error_code,
+                    &status.error_message,
+                    &status.diagnostics_json,
+                )
+                .await?;
+            if updated {
+                info!(
+                    device_id,
+                    job_id = %status.job_id,
+                    state = state.as_str(),
+                    "updated job status"
+                );
+            } else {
+                warn!(
+                    device_id,
+                    job_id = %status.job_id,
+                    attempt = status.attempt,
+                    "ignored stale or terminal job status"
+                );
+            }
         }
         None => {}
     }

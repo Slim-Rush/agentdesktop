@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod admin_auth;
 pub mod catalog;
 pub mod daemon_config;
 pub mod database;

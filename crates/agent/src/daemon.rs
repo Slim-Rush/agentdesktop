@@ -608,12 +608,21 @@ where
         .map(|catalog| catalog.sync_interval)
         .unwrap_or(Duration::from_secs(300));
     let (catalog_sync_tx, catalog_sync_rx) = mpsc::channel(1);
+    let jobs = crate::jobs::JobExecutor::new(args.state_dir.clone());
+    #[cfg(target_os = "macos")]
+    let installer: Option<Arc<dyn crate::installer::Installer>> = Some(Arc::new(
+        crate::installer::MacosInstaller::new(home_directory()?, args.state_dir.clone()),
+    ));
+    #[cfg(not(target_os = "macos"))]
+    let installer: Option<Arc<dyn crate::installer::Installer>> = None;
     let agent_runtime = Arc::new(AgentRuntime {
         catalog: Arc::new(Mutex::new(catalog)),
         local_config: Arc::new(Mutex::new(local_config_store)),
         catalog_keys,
         base_config: config.clone(),
         sync_interval,
+        jobs,
+        installer,
         catalog_sync: has_controller.then_some(catalog_sync_tx),
     });
     if let Some(controller) = config.controller.clone() {

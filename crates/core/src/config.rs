@@ -498,6 +498,10 @@ pub struct ControllerConfig {
     /// Signed agent catalog served to enrolled devices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_catalog: Option<ControllerAgentCatalogConfig>,
+    /// Authentication for admin write endpoints. Absent means write requests
+    /// are refused until an operator configures it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_auth: Option<ControllerAdminAuthConfig>,
     /// LLM gateway JWT signing settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_jwt: Option<ControllerGatewayJwtConfig>,
@@ -555,6 +559,17 @@ pub struct ControllerAgentCatalogConfig {
     /// Pinned Ed25519 public keys used to validate the file at load time.
     #[serde(default)]
     pub public_keys: Vec<CatalogPublicKey>,
+}
+
+/// Verified OIDC actors allowed to use admin write endpoints.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControllerAdminAuthConfig {
+    /// OIDC subjects allowed to enqueue or cancel jobs. Empty refuses every
+    /// write request (fail closed).
+    #[serde(default)]
+    pub allowed_subjects: Vec<String>,
 }
 
 /// Settings for issuing short-lived LLM gateway JWTs.

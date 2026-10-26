@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use agentdesktop_controller::{
     admin::{self, AdminState, ControllerSettings},
+    admin_auth::AdminAuth,
     catalog::CatalogStore,
     daemon_config::{self, DaemonConfigStore},
     database::Database,
@@ -60,6 +61,14 @@ async fn main() -> anyhow::Result<()> {
     .await
     .context("initialize OIDC enrollment")?;
     tracing::info!("OIDC enrollment enabled");
+    let admin_auth = AdminAuth::new(
+        Some(oidc.clone()),
+        config
+            .admin_auth
+            .as_ref()
+            .map(|auth| auth.allowed_subjects.clone())
+            .unwrap_or_default(),
+    );
     let gateway_jwt_issuer = config
         .gateway_jwt
         .as_ref()
@@ -94,6 +103,8 @@ async fn main() -> anyhow::Result<()> {
     let admin_state = AdminState::new(
         database.clone(),
         daemon_config.clone(),
+        catalog.clone(),
+        admin_auth,
         ControllerSettings {
             fleet_listen: config.fleet_listen.to_string(),
             admin_listen: config.admin_listen.to_string(),

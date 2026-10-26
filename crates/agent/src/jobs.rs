@@ -8,7 +8,32 @@ use std::{
 
 use agentdesktop_core::catalog::{CatalogPublicKey, CatalogSnapshot};
 use agentdesktop_proto::fleet::{AgentJob, JobAction, JobState, JobStatus};
+use anyhow::{bail, ensure};
 use serde::{Deserialize, Serialize};
+
+const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
+
+/// Download an artifact over HTTPS with a bounded size and timeout.
+pub async fn download_artifact(url: &str) -> anyhow::Result<Vec<u8>> {
+    ensure!(url.starts_with("https://"), "artifact URL must use HTTPS");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()?;
+    let response = client.get(url).send().await?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ARTIFACT_BYTES as u64)
+    {
+        bail!("artifact exceeds the size limit");
+    }
+    let bytes = response.bytes().await?;
+    ensure!(
+        bytes.len() <= MAX_ARTIFACT_BYTES,
+        "artifact exceeds the size limit"
+    );
+    Ok(bytes.to_vec())
+}
 
 use crate::{installer::Installer, manifest::verify_artifact, secure_fs};
 
@@ -150,6 +175,24 @@ impl JobExecutor {
                 tracing::warn!(error = %error, "could not encode job status");
             }
         }
+    }
+
+    /// All persisted job statuses, newest id last. Used by the local API.
+    pub fn list_statuses(&self) -> Vec<JobStatus> {
+        let directory = self.state_dir.join("jobs");
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        let mut statuses: Vec<JobStatus> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let bytes = std::fs::read(entry.path()).ok()?;
+                let stored: StoredStatus = serde_json::from_slice(&bytes).ok()?;
+                Some(stored.into())
+            })
+            .collect();
+        statuses.sort_by(|left, right| left.job_id.cmp(&right.job_id));
+        statuses
     }
 }
 
@@ -442,5 +485,13 @@ mod tests {
         );
         assert_eq!(status.state, JobState::Failed as i32);
         assert_eq!(status.error_code, "receipt_conflict");
+    }
+
+    #[tokio::test]
+    async fn artifact_download_requires_https() {
+        let error = super::download_artifact("http://example.com/a.tar.gz")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTPS"));
     }
 }

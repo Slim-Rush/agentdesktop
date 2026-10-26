@@ -9,10 +9,10 @@ tasks:
   completed: true
 - id: task-5521b8ece4
   title: Add controller job state machine, persistence, and admin API
-  completed: false
+  completed: true
 - id: task-6da48b4aba
   title: Implement daemon job executor and reconnect handling
-  completed: false
+  completed: true
 - id: task-cb36214131
   title: Implement manifest verification and macOS user-level installer
   completed: true
@@ -27,4 +27,4 @@ tasks:
     recovery and receipt object verification
   completed: false
 created_at: '2026-10-26T02:15:17+00:00'
-updated_at: '2026-10-26T03:20:02+00:00'
+updated_at: '2026-10-26T03:28:14+00:00'

@@ -1,6 +1,71 @@
 //! Controller-side job state machine for user-level agent install/uninstall.
 
-use agentdesktop_proto::fleet::{JobAction as ProtoJobAction, JobState as ProtoJobState};
+use agentdesktop_proto::fleet::{
+    JobAction, JobAction as ProtoJobAction, JobState as ProtoJobState,
+};
+
+/// Input for creating a job. The controller assigns the id and timestamps.
+#[derive(Clone, Debug)]
+pub struct NewJob {
+    pub device_id: String,
+    pub idempotency_key: String,
+    pub origin: String,
+    pub requested_by: String,
+    pub catalog_id: String,
+    pub catalog_revision: i64,
+    pub catalog_sha256: String,
+    pub agent_id: String,
+    pub version: String,
+    pub action: JobAction,
+    pub deadline_unix_seconds: i64,
+}
+
+/// A persisted job row.
+#[derive(Clone, Debug, serde::Serialize, sqlx::FromRow)]
+pub struct JobRecord {
+    pub id: String,
+    pub device_id: String,
+    pub attempt: i64,
+    pub idempotency_key: String,
+    pub origin: String,
+    pub requested_by: String,
+    pub catalog_id: String,
+    pub catalog_revision: i64,
+    pub catalog_sha256: String,
+    pub agent_id: String,
+    pub version: String,
+    pub action: i64,
+    pub state: i64,
+    pub deadline_unix_seconds: i64,
+    pub error_code: String,
+    pub error_message: String,
+    pub diagnostics_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl JobRecord {
+    pub fn state(&self) -> Option<JobState> {
+        JobState::from_proto(self.state as i32)
+    }
+
+    pub fn to_proto(&self) -> agentdesktop_proto::fleet::AgentJob {
+        agentdesktop_proto::fleet::AgentJob {
+            job_id: self.id.clone(),
+            attempt: u32::try_from(self.attempt).unwrap_or(u32::MAX),
+            idempotency_key: self.idempotency_key.clone(),
+            origin: self.origin.clone(),
+            requested_by: self.requested_by.clone(),
+            catalog_id: self.catalog_id.clone(),
+            catalog_revision: u64::try_from(self.catalog_revision).unwrap_or(0),
+            catalog_sha256: self.catalog_sha256.clone(),
+            agent_id: self.agent_id.clone(),
+            version: self.version.clone(),
+            action: self.action as i32,
+            deadline_unix_seconds: u64::try_from(self.deadline_unix_seconds).unwrap_or(0),
+        }
+    }
+}
 
 /// The lifecycle state stored in `agent_jobs.state`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +129,10 @@ impl JobState {
             Self::Cancelled => ProtoJobState::Cancelled,
             Self::Expired => ProtoJobState::Expired,
         }
+    }
+
+    pub fn proto_value(self) -> i64 {
+        self.to_proto() as i64
     }
 
     pub fn from_proto(value: i32) -> Option<Self> {

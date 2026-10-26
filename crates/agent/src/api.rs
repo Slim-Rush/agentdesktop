@@ -28,13 +28,15 @@ use agentdesktop_core::{
         TelemetryEventKind,
     },
 };
-use agentdesktop_proto::fleet::DeviceUsageRequest;
+use agentdesktop_proto::fleet::{AgentJob, DeviceUsageRequest, JobAction};
 use agentdesktop_usage::{UsageError, UsageStore};
 
 use crate::{
     catalog::CatalogCache,
     enrollment::EnrollmentState,
     gateway_oidc,
+    installer::Installer,
+    jobs::JobExecutor,
     local_config::LocalConfigStore,
     program_choice,
     reconcile::{Reconciler, apply_program_choice, configured_programs},
@@ -51,6 +53,8 @@ pub struct AgentRuntime {
     /// Startup configuration used as the base for local-mode program merging.
     pub base_config: DaemonConfig,
     pub sync_interval: Duration,
+    pub jobs: JobExecutor,
+    pub installer: Option<Arc<dyn Installer>>,
     /// A manual catalog-sync request; `None` when no controller is configured.
     pub catalog_sync: Option<mpsc::Sender<()>>,
 }
@@ -268,6 +272,9 @@ pub fn router(state: AppState) -> Router {
             "/v1/agents/{id}/config",
             get(agent_config).put(put_agent_config),
         )
+        .route("/v1/agents/{id}/jobs", post(create_local_job))
+        .route("/v1/jobs", get(list_jobs))
+        .route("/v1/jobs/{job_id}", get(job_status))
         .route("/v1/sync-status", get(sync_status))
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
@@ -525,6 +532,172 @@ async fn put_agent_config(
         let _ = sender.try_send(());
     }
     Ok(Json(json!({ "revision": revision })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalJobRequest {
+    action: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    idempotency_key: String,
+}
+
+async fn create_local_job(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<LocalJobRequest>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let snapshot = {
+        let cache = runtime
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.snapshot().ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "agent catalog has not been synced".to_owned(),
+            )
+        })?
+    };
+    let entry = snapshot
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown agent {id:?}")))?;
+    let action = match request.action.as_str() {
+        "install" => JobAction::Install,
+        "uninstall" => JobAction::Uninstall,
+        "update" => JobAction::Update,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "action must be install, uninstall, or update".to_owned(),
+            ));
+        }
+    };
+    let version = if request.version.is_empty() {
+        entry
+            .versions
+            .first()
+            .map(|version| version.version.clone())
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "agent has no versions".to_owned()))?
+    } else {
+        request.version
+    };
+    let version_entry = entry
+        .versions
+        .iter()
+        .find(|candidate| candidate.version == version)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("unknown version {version:?}"),
+            )
+        })?;
+    let artifact = if matches!(action, JobAction::Install | JobAction::Update) {
+        Some(
+            crate::jobs::download_artifact(&version_entry.artifact_url)
+                .await
+                .map_err(|error| (StatusCode::BAD_GATEWAY, format!("{error:#}")))?,
+        )
+    } else {
+        None
+    };
+    let installer = runtime.installer.clone().ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            "user-level installation is not supported on this platform".to_owned(),
+        )
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let job = AgentJob {
+        job_id: format!("local-{now}-{}", rand::random::<u64>()),
+        attempt: 1,
+        idempotency_key: if request.idempotency_key.is_empty() {
+            format!("local-{now}-{}", rand::random::<u64>())
+        } else {
+            request.idempotency_key
+        },
+        origin: "local".to_owned(),
+        requested_by: std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "local".to_owned()),
+        catalog_id: snapshot.catalog.catalog_id.clone(),
+        catalog_revision: snapshot.catalog.revision,
+        catalog_sha256: snapshot.sha256.clone(),
+        agent_id: entry.id.clone(),
+        version,
+        action: action as i32,
+        deadline_unix_seconds: now + 900,
+    };
+    let jobs = runtime.jobs.clone();
+    let keys = runtime.catalog_keys.clone();
+    let snapshot_for_job = snapshot;
+    let status = tokio::task::spawn_blocking(move || {
+        jobs.execute(
+            &job,
+            &snapshot_for_job,
+            &keys,
+            artifact.as_deref(),
+            installer.as_ref(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("job executor failed: {error}"),
+        )
+    })?;
+    Ok(Json(status_json(&status)))
+}
+
+async fn list_jobs(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    Ok(Json(json!({
+        "jobs": runtime
+            .jobs
+            .list_statuses()
+            .iter()
+            .map(status_json)
+            .collect::<Vec<_>>(),
+    })))
+}
+
+async fn job_status(
+    State(state): State<AppState>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    runtime
+        .jobs
+        .list_statuses()
+        .iter()
+        .find(|status| status.job_id == job_id)
+        .map(status_json)
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown job {job_id:?}")))
+}
+
+fn status_json(status: &agentdesktop_proto::fleet::JobStatus) -> Value {
+    json!({
+        "jobId": status.job_id,
+        "attempt": status.attempt,
+        "state": status.state,
+        "progressPercent": status.progress_percent,
+        "errorCode": status.error_code,
+        "errorMessage": status.error_message,
+        "diagnosticsJson": status.diagnostics_json,
+    })
 }
 
 async fn sync_status(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {

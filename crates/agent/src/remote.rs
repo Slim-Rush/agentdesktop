@@ -30,11 +30,12 @@ use agentdesktop_core::{
     },
 };
 use agentdesktop_proto::fleet::{
-    self as proto, AgentConfigStatus, AgentMessage, AgentState, ConfigState, ConfigStatus,
-    DeviceUsageRequest, Discovery, GetAgentCatalogRequest, Heartbeat, Hello, Inventory,
-    LlmGatewayCredentialRequest, ProgramState as ProtoProgramState, ProgramStatus,
-    RenewDeviceCertificateRequest, SessionNewEvent, TelemetryEvent, ToolUseEvent, agent_message,
-    controller_message, fleet_agent_client::FleetAgentClient, telemetry_event,
+    self as proto, AgentConfigStatus, AgentJob, AgentMessage, AgentState, ConfigState,
+    ConfigStatus, DeviceUsageRequest, Discovery, GetAgentCatalogRequest, Heartbeat, Hello,
+    Inventory, JobAction, JobStatus, LlmGatewayCredentialRequest,
+    ProgramState as ProtoProgramState, ProgramStatus, RenewDeviceCertificateRequest,
+    SessionNewEvent, TelemetryEvent, ToolUseEvent, agent_message, controller_message,
+    fleet_agent_client::FleetAgentClient, telemetry_event,
 };
 
 use crate::{
@@ -836,6 +837,133 @@ async fn next_catalog_sync(receiver: &mut Option<mpsc::Receiver<()>>) -> Option<
     }
 }
 
+fn agent_capabilities() -> Vec<String> {
+    let mut capabilities = vec!["agent_catalog_v1".to_owned()];
+    #[cfg(target_os = "macos")]
+    capabilities.push("user_install_macos".to_owned());
+    capabilities
+}
+
+fn job_failure(job: &AgentJob, code: &str, message: &str) -> JobStatus {
+    JobStatus {
+        job_id: job.job_id.clone(),
+        attempt: job.attempt,
+        state: agentdesktop_proto::fleet::JobState::Failed as i32,
+        progress_percent: 0,
+        error_code: code.to_owned(),
+        error_message: message.to_owned(),
+        diagnostics_json: String::new(),
+    }
+}
+
+async fn handle_job(
+    sender: &mpsc::Sender<AgentMessage>,
+    agent: &crate::api::AgentRuntime,
+    job: AgentJob,
+) -> anyhow::Result<()> {
+    let snapshot = {
+        let cache = agent
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.snapshot()
+    };
+    let Some(snapshot) = snapshot else {
+        return send(
+            sender,
+            agent_message::Message::JobStatus(job_failure(
+                &job,
+                "catalog_unavailable",
+                "no verified catalog is cached",
+            )),
+        )
+        .await;
+    };
+    let Some(installer) = agent.installer.clone() else {
+        return send(
+            sender,
+            agent_message::Message::JobStatus(job_failure(
+                &job,
+                "unsupported_platform",
+                "user-level installation is not supported on this platform",
+            )),
+        )
+        .await;
+    };
+    let action = JobAction::try_from(job.action).unwrap_or(JobAction::Unspecified);
+    let mut artifact = None;
+    if matches!(action, JobAction::Install | JobAction::Update) {
+        let Some(entry) = snapshot
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == job.agent_id)
+        else {
+            return send(
+                sender,
+                agent_message::Message::JobStatus(job_failure(
+                    &job,
+                    "unknown_agent",
+                    "agent is not in the catalog",
+                )),
+            )
+            .await;
+        };
+        let Some(version) = entry
+            .versions
+            .iter()
+            .find(|version| version.version == job.version)
+        else {
+            return send(
+                sender,
+                agent_message::Message::JobStatus(job_failure(
+                    &job,
+                    "unknown_version",
+                    "version is not in the catalog",
+                )),
+            )
+            .await;
+        };
+        match crate::jobs::download_artifact(&version.artifact_url).await {
+            Ok(bytes) => artifact = Some(bytes),
+            Err(error) => {
+                return send(
+                    sender,
+                    agent_message::Message::JobStatus(job_failure(
+                        &job,
+                        "download_failed",
+                        &format!("{error:#}"),
+                    )),
+                )
+                .await;
+            }
+        }
+    }
+    let jobs = agent.jobs.clone();
+    let keys = agent.catalog_keys.clone();
+    let snapshot_for_job = snapshot;
+    let job_for_task = job.clone();
+    let status = match tokio::task::spawn_blocking(move || {
+        jobs.execute(
+            &job_for_task,
+            &snapshot_for_job,
+            &keys,
+            artifact.as_deref(),
+            installer.as_ref(),
+        )
+    })
+    .await
+    {
+        Ok(status) => status,
+        Err(error) => job_failure(
+            &job,
+            "install_failed",
+            &format!("executor task failed: {error}"),
+        ),
+    };
+    send(sender, agent_message::Message::JobStatus(status)).await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn connect(
     controller: &ControllerConnectionConfig,
@@ -876,7 +1004,7 @@ async fn connect(
             os: std::env::consts::OS.to_string(),
             architecture: std::env::consts::ARCH.to_string(),
             agent_version: agentdesktop_core::VERSION.to_string(),
-            capabilities: vec!["agent_catalog_v1".to_owned()],
+            capabilities: agent_capabilities(),
         }),
     )
     .await?;
@@ -983,40 +1111,48 @@ async fn connect(
                     return Ok(());
                 };
                 controller_status.mark_seen().await;
-                if let Some(controller_message::Message::DaemonConfig(config)) = message.message {
-                    info!(
-                        revision = config.revision,
-                        bytes = config.yaml.len(),
-                        "received daemon configuration"
-                    );
-                    stream_revision = Some(config.revision);
-                    let parsed = replace_current_config(&channels.current, &config);
-                    let parsed_ok = parsed.is_ok();
-                    let status = apply_parsed(
-                        state_dir,
-                        &config,
-                        parsed,
-                        reconciler,
-                        Some(&channels.current),
-                        channels.agent.as_deref(),
-                        channels.local_mode,
-                    );
-                    // A parsed configuration whose apply failed is the current
-                    // one but not yet saved; a later tick that applies it
-                    // saves it, so a restart does not go back to the previous one.
-                    pending_persist = (parsed_ok && !status.error.is_empty())
-                        .then(|| (config.revision, config.yaml.clone()));
-                    last_sent = Some(status.clone());
-                    if status.error.is_empty() {
-                        info!(revision = status.revision, "applied daemon configuration");
-                    } else {
-                        warn!(
-                            revision = status.revision,
-                            error = %status.error,
-                            "failed daemon configuration"
+                match message.message {
+                    Some(controller_message::Message::DaemonConfig(config)) => {
+                        info!(
+                            revision = config.revision,
+                            bytes = config.yaml.len(),
+                            "received daemon configuration"
                         );
+                        stream_revision = Some(config.revision);
+                        let parsed = replace_current_config(&channels.current, &config);
+                        let parsed_ok = parsed.is_ok();
+                        let status = apply_parsed(
+                            state_dir,
+                            &config,
+                            parsed,
+                            reconciler,
+                            Some(&channels.current),
+                            channels.agent.as_deref(),
+                            channels.local_mode,
+                        );
+                        // A parsed configuration whose apply failed is the current
+                        // one but not yet saved; a later tick that applies it
+                        // saves it, so a restart does not go back to the previous one.
+                        pending_persist = (parsed_ok && !status.error.is_empty())
+                            .then(|| (config.revision, config.yaml.clone()));
+                        last_sent = Some(status.clone());
+                        if status.error.is_empty() {
+                            info!(revision = status.revision, "applied daemon configuration");
+                        } else {
+                            warn!(
+                                revision = status.revision,
+                                error = %status.error,
+                                "failed daemon configuration"
+                            );
+                        }
+                        send(&sender, agent_message::Message::ConfigStatus(status)).await?;
                     }
-                    send(&sender, agent_message::Message::ConfigStatus(status)).await?;
+                    Some(controller_message::Message::AgentJob(job)) => {
+                        if let Some(agent) = channels.agent.as_ref() {
+                            handle_job(&sender, agent, job).await?;
+                        }
+                    }
+                    None => {}
                 }
             }
         }
@@ -1864,6 +2000,8 @@ mod tests {
             catalog_keys: Vec::new(),
             base_config: agentdesktop_core::config::parse_daemon("configMode: local\n").unwrap(),
             sync_interval: Duration::from_secs(300),
+            jobs: crate::jobs::JobExecutor::new(state_dir.clone()),
+            installer: None,
             catalog_sync: None,
         };
         let reconciler = test_reconciler(&state_dir);

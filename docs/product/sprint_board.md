@@ -8,8 +8,8 @@
 > Spec: docs/specs/STORY-202610260c7300b0bf28.md
 
 - [x] Add job proto messages and ListPendingJobs
-- [ ] Add controller job state machine, persistence, and admin API
-- [ ] Implement daemon job executor and reconnect handling
+- [x] Add controller job state machine, persistence, and admin API
+- [x] Implement daemon job executor and reconnect handling
 - [x] Implement manifest verification and macOS user-level installer
 - [ ] Implement uninstall receipts, dry-run, and detection
 - [ ] Add diagnostics, audit, tests, and update the HLD
