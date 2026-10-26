@@ -150,22 +150,27 @@ dynamic/deployment supporting views), verified 2026-10-23.
 
 | Path | Purpose |
 |------|---------|
-| `README.md` | Product capabilities, supported tools, operating modes |
+| `README.md:1-45` | Product purpose, supported tools, operating modes |
 | `crates/proto/proto/fleet.proto` | Fleet gRPC contract and message model |
-| `crates/core/src/model.rs` | Discovery, inventory, health, and status model |
-| `crates/core/src/config.rs` | Daemon and controller configuration schema |
-| `crates/agent/src/api.rs` | Daemon local HTTP API |
-| `crates/agent/src/daemon.rs` | Daemon startup, listeners, usage receiver |
-| `crates/agent/src/reconcile/mod.rs` | Reconciliation and apply report |
-| `crates/agent/src/remote.rs` | Controller session, retries, config push |
-| `crates/agent/src/llm_proxy.rs` | Loopback LLM proxy and credential cache |
-| `crates/controller/src/service.rs` | Fleet gRPC service and device auth |
-| `crates/controller/src/admin.rs` | Controller admin HTTP API |
-| `crates/controller/src/database.rs` | Persistence operations |
-| `crates/controller/migrations/*.sql` | Controller schema and indexes |
-| `crates/controller/src/{oidc,device_ca,gateway_jwt,usage}.rs` | Enrollment, CA, JWT, usage |
-| `crates/agentdesktop/src/main.rs` | Tauri commands and tray application |
-| `frontend/{controller,desktop,ui}/src` | UI routes, backend calls, shared components |
+| `crates/core/src/model.rs:1-180` | Discovery, inventory, health, and status model |
+| `crates/core/src/config.rs:467-530` | Controller top-level configuration |
+| `crates/agent/src/api.rs:200-230` | Daemon local HTTP route table |
+| `crates/agent/src/daemon.rs:350-500` | Daemon startup and listeners |
+| `crates/agent/src/reconcile/mod.rs:39-160` | Reconciler entry points |
+| `crates/agent/src/remote.rs:889-960` | Config apply and persistence |
+| `crates/agent/src/llm_proxy.rs:264-335` | Loopback LLM proxy routes |
+| `crates/controller/src/service.rs:79-260` | Fleet gRPC service and device auth |
+| `crates/controller/src/admin.rs:58-92` | Controller admin HTTP API |
+| `crates/controller/src/database.rs:17-130` | Persistence types |
+| `crates/controller/migrations/0001_controller.sql:1-42` | Controller schema and indexes |
+| `crates/controller/src/oidc.rs:116-220` | OIDC enrollment |
+| `crates/controller/src/device_ca.rs` | Device certificate issuance |
+| `crates/controller/src/gateway_jwt.rs:23-120` | Gateway JWT issuance |
+| `crates/controller/src/usage.rs` | Usage projection |
+| `crates/agentdesktop/src/main.rs:544-670` | Tauri commands and tray application |
+| `frontend/controller/src/App.tsx` | Controller UI routes |
+| `frontend/desktop/src/Desktop.tsx` | Desktop UI views |
+| `frontend/ui/src/index.ts` | Shared UI exports |
 | `docs/architecture/governance/rules.md` | Security and change invariants |
 
 ## Permission Matrix

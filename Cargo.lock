@@ -51,6 +51,7 @@ dependencies = [
  "anyhow",
  "apple-native-keyring-store",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64 0.23.1",
  "bytes",
@@ -150,6 +151,8 @@ name = "agentdesktop-core"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "aws-lc-rs",
+ "base64 0.23.1",
  "humantime-serde",
  "reqwest",
  "schemars 1.2.3",
@@ -158,6 +161,7 @@ dependencies = [
  "serde_json",
  "serde_json_path_to_error",
  "serde_yaml",
+ "sha2 0.11.1",
  "tracing-appender",
  "tracing-subscriber",
  "url",

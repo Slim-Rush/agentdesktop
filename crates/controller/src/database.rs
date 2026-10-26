@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use agentdesktop_core::model::{LocalModel, McpServer, ModelRuntime, Skill};
 use agentdesktop_proto::fleet::{
-    ConfigStatus, Hello, Inventory, ProgramState, TelemetryEvent, telemetry_event,
+    AgentState, ConfigStatus, Hello, Inventory, ProgramState, TelemetryEvent, telemetry_event,
 };
 use agentdesktop_usage::UsageStore;
 use serde::Serialize;
@@ -473,6 +473,74 @@ impl Database {
             .bind(i64::try_from(timestamp).unwrap_or(i64::MAX))
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Stores the catalog and per-agent configuration state reported by a device.
+    pub async fn update_agent_state(
+        &self,
+        device_id: &str,
+        state: &AgentState,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            state.catalog_sha256.len() == 64
+                && state
+                    .catalog_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit()),
+            "invalid catalog sha256"
+        );
+        anyhow::ensure!(
+            state.agents.len() <= 64,
+            "too many agent states in one report"
+        );
+        for agent in &state.agents {
+            anyhow::ensure!(
+                !agent.agent_id.is_empty()
+                    && agent.agent_id.len() <= 64
+                    && !agent.program_key.is_empty()
+                    && agent.program_key.len() <= 64
+                    && agent.detail.len() <= 2048,
+                "invalid agent state entry"
+            );
+        }
+        let agents_json = serde_json::to_string(
+            &state
+                .agents
+                .iter()
+                .map(|agent| {
+                    serde_json::json!({
+                        "agentId": agent.agent_id,
+                        "programKey": agent.program_key,
+                        "state": agent.state,
+                        "detail": agent.detail,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?;
+        let now = unix_time_seconds();
+        sqlx::query(
+            "INSERT INTO device_agent_state
+                (device_id, catalog_revision, catalog_sha256, last_sync_at, stale,
+                 agents_json, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (device_id) DO UPDATE SET
+                catalog_revision = EXCLUDED.catalog_revision,
+                catalog_sha256 = EXCLUDED.catalog_sha256,
+                last_sync_at = EXCLUDED.last_sync_at,
+                stale = EXCLUDED.stale,
+                agents_json = EXCLUDED.agents_json,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(device_id)
+        .bind(i64::try_from(state.catalog_revision).unwrap_or(i64::MAX))
+        .bind(&state.catalog_sha256)
+        .bind(i64::try_from(state.last_sync_unix_seconds).unwrap_or(i64::MAX))
+        .bind(if state.stale { 1_i64 } else { 0_i64 })
+        .bind(agents_json)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use agentdesktop_controller::{
     admin::{self, AdminState, ControllerSettings},
+    catalog::CatalogStore,
     daemon_config::{self, DaemonConfigStore},
     database::Database,
     device_ca::DeviceCertificateIssuer,
@@ -41,6 +42,11 @@ async fn main() -> anyhow::Result<()> {
     if let Some(daemon) = &config.daemon_config {
         daemon_config::watch(daemon.path.clone(), daemon.revision, daemon_config.clone())?;
     }
+    let catalog = match &config.agent_catalog {
+        Some(catalog) => CatalogStore::load(&catalog.path, &catalog.public_keys)
+            .context("initialize signed agent catalog")?,
+        None => CatalogStore::empty(),
+    };
     let database = Database::connect(&config.database_url).await?;
     let oidc = &config.oidc;
     if oidc.issuer.starts_with("http://") {
@@ -116,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         gateway_jwt_issuer,
         Some(device_certificate_issuer),
     )
+    .with_catalog(catalog)
     .with_usage_collection(usage_ingest.is_some());
 
     let certificate = std::fs::read(&tls.certificate)

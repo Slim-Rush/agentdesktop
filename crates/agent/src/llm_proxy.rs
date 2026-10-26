@@ -1413,6 +1413,7 @@ mod tests {
                 discovery, enrollment: EnrollmentState::new(false), state_dir: dir.path().to_owned(),
                 oidc_callback_listen: None, telemetry: None, logout: None, usage: None,
                 programs: None,
+                agent_runtime: None,
             };
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let proxy_address = listener.local_addr().unwrap();
@@ -2049,6 +2050,7 @@ mod tests {
                 logout: None,
                 usage: None,
                 programs: None,
+                agent_runtime: None,
             };
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let proxy_address = listener.local_addr().unwrap();
@@ -2439,6 +2441,7 @@ mod tests {
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         };
         (dir, state)
     }
@@ -2618,6 +2621,7 @@ mod tests {
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         };
         (dir, state)
     }
@@ -2688,6 +2692,7 @@ mod tests {
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         };
         (dir, state)
     }

@@ -3,9 +3,9 @@ use std::pin::Pin;
 use agentdesktop_proto::fleet::{
     AgentMessage, BeginEnrollmentRequest, BeginEnrollmentResponse, CompleteEnrollmentRequest,
     ConfigStatus, ControllerMessage, DeviceCertificateResponse, DeviceUsageRequest,
-    DeviceUsageResponse, EnrollResponse, LlmGatewayCredentialRequest, LlmGatewayCredentialResponse,
-    RenewDeviceCertificateRequest, agent_message, controller_message,
-    fleet_agent_server::FleetAgent,
+    DeviceUsageResponse, EnrollResponse, GetAgentCatalogRequest, GetAgentCatalogResponse,
+    LlmGatewayCredentialRequest, LlmGatewayCredentialResponse, RenewDeviceCertificateRequest,
+    agent_message, controller_message, fleet_agent_server::FleetAgent,
 };
 use futures_core::Stream;
 use tokio::{sync::mpsc, time};
@@ -19,6 +19,7 @@ use agentdesktop_core::config::{LlmGatewayAuthentication, ProgramAuthentication,
 use agentdesktop_usage::UsageError;
 
 use crate::{
+    catalog::CatalogStore,
     daemon_config::DaemonConfigStore,
     database::{Database, DevicePrincipal},
     device_ca::DeviceCertificateIssuer,
@@ -33,6 +34,7 @@ pub struct FleetAgentService {
     daemon_config: DaemonConfigStore,
     gateway_jwt_issuer: Option<GatewayJwtIssuer>,
     device_certificate_issuer: Option<DeviceCertificateIssuer>,
+    catalog: CatalogStore,
     usage_enabled: bool,
 }
 
@@ -50,8 +52,14 @@ impl FleetAgentService {
             daemon_config,
             gateway_jwt_issuer,
             device_certificate_issuer,
+            catalog: CatalogStore::empty(),
             usage_enabled: false,
         }
+    }
+
+    pub fn with_catalog(mut self, catalog: CatalogStore) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     /// Tells devices that the controller collects gateway usage.
@@ -248,6 +256,30 @@ impl FleetAgent for FleetAgentService {
             UsageError::InvalidQuery(message) => Status::invalid_argument(message),
             UsageError::Storage(error) => internal(error),
         })
+    }
+
+    async fn get_agent_catalog(
+        &self,
+        request: Request<GetAgentCatalogRequest>,
+    ) -> Result<Response<GetAgentCatalogResponse>, Status> {
+        self.authenticate_device(&request).await?;
+        let snapshot = self
+            .catalog
+            .current()
+            .ok_or_else(|| Status::failed_precondition("agent catalog is not configured"))?;
+        let request = request.into_inner();
+        let unchanged = request.known_revision == snapshot.catalog.revision
+            && request.known_sha256 == snapshot.sha256;
+        Ok(Response::new(GetAgentCatalogResponse {
+            unchanged,
+            revision: snapshot.catalog.revision,
+            sha256: snapshot.sha256.clone(),
+            signed_catalog_json: if unchanged {
+                Vec::new()
+            } else {
+                snapshot.signed_catalog_json.clone()
+            },
+        }))
     }
 
     async fn connect(
@@ -561,6 +593,16 @@ async fn handle_agent_message(
         Some(agent_message::Message::Telemetry(event)) => {
             database.insert_telemetry(device_id, &event).await?;
             debug!(device_id, "stored telemetry event");
+        }
+        Some(agent_message::Message::AgentState(state)) => {
+            database.update_agent_state(device_id, &state).await?;
+            debug!(
+                device_id,
+                revision = state.catalog_revision,
+                stale = state.stale,
+                agents = state.agents.len(),
+                "stored agent state"
+            );
         }
         None => {}
     }

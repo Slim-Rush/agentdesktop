@@ -2,20 +2,20 @@ schema_version: 1
 id: STORY-20261026089ea5bea624
 title: Client-managed agent catalog sync and local configuration
 spec_path: docs/specs/STORY-20261026089ea5bea624.md
-status: backlog
+status: in_progress
 tasks:
 - id: task-d023ad3273
   title: Add catalog proto messages and capability fields
-  completed: false
+  completed: true
 - id: task-49c4103fbe
   title: Implement controller catalog loader and GetAgentCatalog
-  completed: false
+  completed: true
 - id: task-97c2887311
   title: Implement daemon catalog fetch, verification, and cache sync
   completed: false
 - id: task-f05a564971
   title: Implement local config store and local API endpoints
-  completed: false
+  completed: true
 - id: task-219d3db314
   title: Report AgentState to the controller
   completed: false
@@ -25,6 +25,6 @@ tasks:
 - id: task-7245af0b7d
   title: Add effective-config resolver with local/managed modes and If-Match Add LocalConfigValidator
     secret-key denial and redaction
-  completed: false
+  completed: true
 created_at: '2026-10-26T02:15:16+00:00'
-updated_at: '2026-10-26T02:29:27+00:00'
+updated_at: '2026-10-26T02:54:37+00:00'

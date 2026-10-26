@@ -8,6 +8,7 @@ service FleetAgent {
   rpc RenewDeviceCertificate(RenewDeviceCertificateRequest) returns (DeviceCertificateResponse);
   rpc GetLlmGatewayCredential(LlmGatewayCredentialRequest) returns (LlmGatewayCredentialResponse);
   rpc GetDeviceUsage(DeviceUsageRequest) returns (DeviceUsageResponse);
+  rpc GetAgentCatalog(GetAgentCatalogRequest) returns (GetAgentCatalogResponse);
   rpc Connect(stream AgentMessage) returns (stream ControllerMessage);
 }
 
@@ -129,7 +130,39 @@ message AgentMessage {
     Inventory inventory = 3;
     ConfigStatus config_status = 4;
     TelemetryEvent telemetry = 5;
+    AgentState agent_state = 6;
   }
+}
+
+// Catalog sync request. The daemon sends the revision/hash it already has.
+message GetAgentCatalogRequest {
+  uint64 known_revision = 1;
+  string known_sha256 = 2;
+}
+
+message GetAgentCatalogResponse {
+  bool unchanged = 1;
+  uint64 revision = 2;
+  string sha256 = 3;
+  // SignedCatalog JSON, exactly the bytes the signature covers plus envelope.
+  bytes signed_catalog_json = 4;
+}
+
+// Catalog and per-agent configuration state reported by an enrolled device.
+message AgentState {
+  uint64 catalog_revision = 1;
+  string catalog_sha256 = 2;
+  uint64 last_sync_unix_seconds = 3;
+  bool stale = 4;
+  repeated AgentConfigStatus agents = 5;
+}
+
+message AgentConfigStatus {
+  string agent_id = 1;
+  string program_key = 2;
+  // applied, unchanged, not_installed, failed, or unsupported.
+  string state = 3;
+  string detail = 4;
 }
 
 // A timestamped telemetry observation reported by an enrolled device.
@@ -168,6 +201,8 @@ message Hello {
   string os = 3;
   string architecture = 4;
   string agent_version = 5;
+  // Capability flags such as agent_catalog_v1, user_install_macos.
+  repeated string capabilities = 6;
 }
 
 message Heartbeat {

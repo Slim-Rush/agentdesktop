@@ -1,13 +1,14 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
+    extract::{Path as AxumPath, Query, State},
+    http::{HeaderMap, StatusCode, header},
     routing::{get, post},
 };
 use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot, watch};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 use agentdesktop_core::{
     config::{
@@ -24,12 +25,24 @@ use agentdesktop_proto::fleet::DeviceUsageRequest;
 use agentdesktop_usage::{UsageError, UsageStore};
 
 use crate::{
+    catalog::CatalogCache,
     enrollment::EnrollmentState,
-    gateway_oidc, program_choice,
+    gateway_oidc,
+    local_config::LocalConfigStore,
+    program_choice,
     reconcile::{Reconciler, apply_program_choice, configured_programs},
     remote, subscription,
     tick::{self, CurrentConfig, TickStatus},
 };
+
+/// Runtime state for the optional agent catalog and local configuration.
+#[derive(Clone)]
+pub struct AgentRuntime {
+    pub catalog: Arc<Mutex<CatalogCache>>,
+    pub local_config: Arc<Mutex<LocalConfigStore>>,
+    /// A manual catalog-sync request; `None` when no controller is configured.
+    pub catalog_sync: Option<mpsc::Sender<()>>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,6 +59,8 @@ pub struct AppState {
     pub usage: Option<UsageStore>,
     /// The device user's program choice; `None` serves no program routes.
     pub programs: Option<ProgramControl>,
+    /// Catalog and local-configuration runtime; `None` when not configured.
+    pub agent_runtime: Option<Arc<AgentRuntime>>,
 }
 
 /// Reads and changes the device user's program choice, and re-applies the
@@ -182,6 +197,18 @@ impl ProgramControl {
         }
         Ok(self.management())
     }
+
+    /// Applies a locally computed configuration (BYOD local mode).
+    fn apply_local(&self, config: &DaemonConfig) -> Result<(), (StatusCode, String)> {
+        let (report, result) = self.reconciler.apply_with_report(config);
+        report.log();
+        result.map_err(|error| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("apply local configuration: {error:#}"),
+            )
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -213,6 +240,15 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/usage", get(device_usage))
         .route("/v1/programs", get(programs))
         .route("/v1/programs/choice", post(change_program_choice))
+        .route("/v1/catalog", get(catalog))
+        .route("/v1/catalog/sync", post(sync_catalog))
+        .route("/v1/agents", get(agents))
+        .route(
+            "/v1/agents/{id}/config",
+            get(agent_config).put(put_agent_config),
+        )
+        .route("/v1/sync-status", get(sync_status))
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
 }
 
@@ -248,6 +284,207 @@ async fn change_program_choice(
 ) -> Result<Json<ProgramManagement>, (StatusCode, String)> {
     let control = program_control(&state)?;
     blocking(move || control.change(choice)).await
+}
+
+fn agent_runtime(state: &AppState) -> Result<Arc<AgentRuntime>, (StatusCode, String)> {
+    state.agent_runtime.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent catalog and local configuration are not configured".to_owned(),
+        )
+    })
+}
+
+async fn catalog(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let cache = runtime.catalog.lock().await;
+    let snapshot = cache.snapshot().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "agent catalog has not been synced".to_owned(),
+        )
+    })?;
+    Ok(Json(json!({
+        "revision": snapshot.catalog.revision,
+        "sha256": snapshot.sha256,
+        "entries": snapshot.catalog.entries,
+    })))
+}
+
+async fn sync_catalog(State(state): State<AppState>) -> Result<StatusCode, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let sender = runtime.catalog_sync.as_ref().ok_or_else(|| {
+        (
+            StatusCode::FAILED_DEPENDENCY,
+            "daemon has no controller configured".to_owned(),
+        )
+    })?;
+    sender.send(()).await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "catalog sync channel is closed".to_owned(),
+        )
+    })?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn agents(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let cache = runtime.catalog.lock().await;
+    let snapshot = cache.snapshot().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "agent catalog has not been synced".to_owned(),
+        )
+    })?;
+    let local = runtime.local_config.lock().await;
+    let agents = snapshot
+        .catalog
+        .entries
+        .iter()
+        .map(|entry| {
+            json!({
+                "id": entry.id,
+                "displayName": entry.display_name,
+                "programKey": entry.program_key,
+                "platforms": entry.platforms,
+                "architectures": entry.architectures,
+                "configured": local
+                    .current()
+                    .programs
+                    .get(&entry.program_key)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "revision": snapshot.catalog.revision,
+        "agents": agents,
+    })))
+}
+
+async fn agent_config(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let cache = runtime.catalog.lock().await;
+    let snapshot = cache.snapshot().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "agent catalog has not been synced".to_owned(),
+        )
+    })?;
+    let entry = snapshot
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown agent {id:?}")))?;
+    let local = runtime.local_config.lock().await;
+    Ok(Json(json!({
+        "id": entry.id,
+        "programKey": entry.program_key,
+        "revision": local.current().revision,
+        "config": local
+            .current()
+            .programs
+            .get(&entry.program_key)
+            .cloned()
+            .unwrap_or(Value::Null),
+    })))
+}
+
+async fn put_agent_config(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(value): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let expected_revision = headers
+        .get(header::IF_MATCH)
+        .ok_or_else(|| {
+            (
+                StatusCode::PRECONDITION_REQUIRED,
+                "If-Match: <revision> is required".to_owned(),
+            )
+        })?
+        .to_str()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid If-Match header".to_owned(),
+            )
+        })?
+        .trim_matches('"')
+        .parse::<u64>()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid If-Match revision".to_owned(),
+            )
+        })?;
+    let program_key = {
+        let cache = runtime.catalog.lock().await;
+        let snapshot = cache.snapshot().ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "agent catalog has not been synced".to_owned(),
+            )
+        })?;
+        snapshot
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.program_key.clone())
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown agent {id:?}")))?
+    };
+    let revision = {
+        let mut local = runtime.local_config.lock().await;
+        let mut programs = BTreeMap::new();
+        programs.insert(program_key, value);
+        local
+            .update(expected_revision, programs, None)
+            .map_err(|error| match error {
+                crate::local_config::UpdateError::Conflict { current_revision } => (
+                    StatusCode::CONFLICT,
+                    format!("revision conflict; current revision is {current_revision}"),
+                ),
+                crate::local_config::UpdateError::Invalid(error) => {
+                    (StatusCode::UNPROCESSABLE_ENTITY, format!("{error:#}"))
+                }
+            })?
+    };
+    let effective = {
+        let local = runtime.local_config.lock().await;
+        local.effective(&state.config)
+    }
+    .map_err(|error| (StatusCode::UNPROCESSABLE_ENTITY, format!("{error:#}")))?;
+    state
+        .programs
+        .as_ref()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "program management is not available".to_owned(),
+            )
+        })?
+        .apply_local(&effective)?;
+    Ok(Json(json!({ "revision": revision })))
+}
+
+async fn sync_status(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    let runtime = agent_runtime(&state)?;
+    let catalog = runtime.catalog.lock().await.status();
+    let local = runtime.local_config.lock().await;
+    Ok(Json(json!({
+        "catalog": catalog,
+        "localConfigRevision": local.current().revision,
+    })))
 }
 
 async fn telemetry(

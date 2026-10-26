@@ -27,7 +27,7 @@ use tokio::net::UnixListener;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{Mutex, mpsc, watch},
     time,
 };
 use tonic::transport::server::TcpIncoming;
@@ -37,7 +37,13 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 #[cfg(windows)]
 use crate::windows_security::SecurityDescriptor;
 use crate::{
-    api, enrollment::EnrollmentState, gateway_oidc, inventory_watch::InventoryWatch, llm_proxy,
+    api::{self, AgentRuntime},
+    catalog::CatalogCache,
+    enrollment::EnrollmentState,
+    gateway_oidc,
+    inventory_watch::InventoryWatch,
+    llm_proxy,
+    local_config::LocalConfigStore,
     reconcile, remote, secure_fs,
 };
 
@@ -600,6 +606,19 @@ where
         ));
     }
     let has_controller = config.controller.is_some();
+    let catalog_keys = config
+        .agent_catalog
+        .as_ref()
+        .map(|catalog| catalog.public_keys.clone())
+        .unwrap_or_default();
+    let catalog = CatalogCache::load(&args.state_dir, &catalog_keys);
+    let local_config = LocalConfigStore::load(args.state_dir.join("local-config.yaml"))
+        .context("load local agent configuration")?;
+    let agent_runtime = Arc::new(AgentRuntime {
+        catalog: Arc::new(Mutex::new(catalog)),
+        local_config: Arc::new(Mutex::new(local_config)),
+        catalog_sync: None,
+    });
     let state = api::AppState {
         config,
         daemon_info,
@@ -612,6 +631,7 @@ where
         logout,
         usage: usage_store,
         programs: Some(program_control),
+        agent_runtime: Some(agent_runtime),
     };
     let app = api::router(state.clone());
     // The proxy is optional at runtime too: if serving fails (for example the
@@ -1592,6 +1612,7 @@ programs:
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         });
 
         for (method, expected_status) in [("GET", "200 OK"), ("POST", "405 Method Not Allowed")] {
@@ -1731,6 +1752,7 @@ programs:
             logout: None,
             usage: store,
             programs: None,
+            agent_runtime: None,
         });
         let (mut client, server) = tokio::io::duplex(64 * 1024);
         let connection = tokio::spawn(serve_local_connection(server, app));
@@ -1817,6 +1839,7 @@ programs:
             logout: None,
             usage: None,
             programs: None,
+            agent_runtime: None,
         });
 
         for endpoint in ["/v1/health", "/v1/config", "/v1/daemon-info"] {

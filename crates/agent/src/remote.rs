@@ -759,6 +759,7 @@ async fn connect(
             os: std::env::consts::OS.to_string(),
             architecture: std::env::consts::ARCH.to_string(),
             agent_version: agentdesktop_core::VERSION.to_string(),
+            capabilities: vec!["agent_catalog_v1".to_owned()],
         }),
     )
     .await?;
