@@ -79,9 +79,11 @@ export function Desktop() {
               jobs={agents.jobs}
               sync={agents.sync}
               platform={model.bootstrap?.platform ?? "macOS"}
+              architecture={model.bootstrap?.architecture ?? ""}
               loading={agents.loading}
               error={agents.error}
               notice={agents.notice}
+              jobPollError={agents.jobPollError}
               busyAgent={agents.busyAgent}
               onStartJob={agents.startJob}
               onDryRun={agents.dryRunUninstall}

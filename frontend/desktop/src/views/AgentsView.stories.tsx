@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { DesktopStoryFrame } from "../stories/DesktopStoryFrame";
 import type {
@@ -100,9 +100,11 @@ const meta = {
       localConfigRevision: 4,
     },
     platform: "macOS",
+    architecture: "aarch64",
     loading: false,
     error: null,
     notice: null,
+    jobPollError: null,
     busyAgent: null,
     onStartJob: fn(),
     onDryRun: fn(async () => plan),
@@ -134,7 +136,14 @@ export const Loading: Story = {
 };
 
 export const ErrorState: Story = {
-  args: { error: "Could not reach the daemon." },
+  args: {
+    error:
+      "Could not reach the daemon at /Users/test/Library/Application Support/agentdesktop/agentdesktop.sock.",
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/<local path>/)).toBeVisible();
+    await expect(canvas.queryByText(/\/Users\/test/)).not.toBeInTheDocument();
+  },
 };
 
 export const Unsupported: Story = {
@@ -143,6 +152,34 @@ export const Unsupported: Story = {
     await expect(
       canvas.getAllByRole("button", { name: "Unsupported" }),
     ).toHaveLength(2);
+  },
+};
+
+export const UnsupportedArchitecture: Story = {
+  args: { architecture: "x86_64" },
+  play: async ({ canvas }) => {
+    await expect(
+      canvas.getAllByRole("button", { name: "Unsupported" }),
+    ).toHaveLength(2);
+  },
+};
+
+export const ReflowAt320: Story = {
+  globals: { viewport: { value: "reflow", isRotated: false } },
+  play: async ({ canvas, canvasElement }) => {
+    await expect(canvas.getByText("Claude Code")).toBeVisible();
+    const documentElement = canvasElement.ownerDocument.documentElement;
+    const viewportWidth = canvasElement.ownerDocument.defaultView?.innerWidth;
+    await expect(documentElement.scrollWidth).toBeLessThanOrEqual(
+      viewportWidth ?? 0,
+    );
+  },
+};
+
+export const JobPollFailure: Story = {
+  args: { jobPollError: "Could not reach the daemon." },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/Job updates paused/)).toBeVisible();
   },
 };
 
@@ -162,6 +199,10 @@ export const RunningJob: Story = {
   },
   play: async ({ canvas }) => {
     await expect(canvas.getByText("Running · 40%")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Update" })).toBeDisabled();
+    await expect(
+      canvas.getByRole("button", { name: "Install" }),
+    ).toBeDisabled();
   },
 };
 
@@ -176,10 +217,54 @@ export const Configure: Story = {
   },
 };
 
+const conflictingSave = fn(async () => {
+  throw new Error("configuration revision conflict (409)");
+});
+
+export const ConfigConflict: Story = {
+  args: { saveConfig: conflictingSave },
+  play: async ({ canvas }) => {
+    await userEvent.click(
+      canvas.getAllByRole("button", { name: "Configure" })[0],
+    );
+    const editor = await canvas.findByLabelText("JSON configuration");
+    const original = JSON.stringify(config.config, null, 2);
+    await waitFor(() => expect(editor).toHaveValue(original));
+    const save = canvas.getByRole("button", {
+      name: "Save configuration",
+    });
+    await waitFor(() => expect(save).toBeEnabled());
+    await userEvent.click(save);
+    await expect(
+      await canvas.findByText(/configuration revision conflict \(409\)/),
+    ).toBeVisible();
+    await expect(editor).toHaveValue(original);
+  },
+};
+
 export const UninstallConfirmation: Story = {
   play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole("button", { name: "Uninstall" }));
-    await expect(await canvas.findByRole("dialog")).toBeVisible();
+    const trigger = canvas.getAllByRole("button", { name: "Uninstall" })[0];
+    await userEvent.click(trigger);
+    const dialog = await canvas.findByRole("dialog");
+    await expect(dialog).toBeVisible();
     await expect(canvas.getByText(/remove these managed paths/)).toBeVisible();
+
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const confirm = within(dialog).getByRole("button", { name: "Uninstall" });
+    await expect(confirm).toHaveFocus();
+
+    // Tab from the last control wraps to the first, keeping focus in the dialog.
+    await userEvent.tab();
+    await expect(cancel).toHaveFocus();
+    await expect(canvas.queryByRole("dialog")).toBeInTheDocument();
+
+    // Shift+Tab from the first control wraps back to the last.
+    await userEvent.tab({ shift: true });
+    await expect(confirm).toHaveFocus();
+
+    await userEvent.keyboard("{Escape}");
+    await expect(canvas.queryByRole("dialog")).not.toBeInTheDocument();
+    await expect(trigger).toHaveFocus();
   },
 };

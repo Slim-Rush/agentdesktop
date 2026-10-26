@@ -16,17 +16,6 @@
 
 ## 🧪 Verifying
 
-### [STORY-20261026412cfc3ce6a9] Desktop agent management UI and job progress
-> Spec: docs/specs/STORY-20261026412cfc3ce6a9.md
-
-- [x] Add desktop types and Tauri commands
-- [x] Implement Agents view and navigation
-- [x] Implement job progress and history
-- [x] Implement per-agent config editor with If-Match
-- [x] Add sync status and refresh actions
-- [x] Add Storybook/Vitest coverage
-- [x] Update target architecture diagram
-
 ## ✅ Done
 
 ## 📦 Archived
@@ -62,3 +51,14 @@
 - [x] Add diagnostics, audit, tests, and update the HLD
 - [x] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
 - [x] Fix QA P1: identifier validation, catalog expiry, archive size, transitions
+
+### [STORY-20261026412cfc3ce6a9] Desktop agent management UI and job progress
+> Spec: docs/specs/STORY-20261026412cfc3ce6a9.md
+
+- [x] Add desktop types and Tauri commands
+- [x] Implement Agents view and navigation
+- [x] Implement job progress and history
+- [x] Implement per-agent config editor with If-Match
+- [x] Add sync status and refresh actions
+- [x] Add Storybook/Vitest coverage
+- [x] Update target architecture diagram

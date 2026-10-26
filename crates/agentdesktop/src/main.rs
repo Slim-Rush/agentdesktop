@@ -119,6 +119,7 @@ struct Bootstrap {
     settings: Settings,
     version: String,
     platform: &'static str,
+    architecture: &'static str,
 }
 
 #[derive(Serialize)]
@@ -560,6 +561,7 @@ fn get_bootstrap(app: AppHandle) -> Result<Bootstrap, String> {
             "linux" => "Linux",
             other => other,
         },
+        architecture: env::consts::ARCH,
     })
 }
 
@@ -685,8 +687,32 @@ async fn get_jobs() -> Result<serde_json::Value, String> {
         .map_err(|error| format!("{error:#}"))
 }
 
+/// Only catalog identifiers that cannot change the local API route.
+/// Percent-encoding is unnecessary because every other byte is rejected.
+fn validate_path_segment(value: &str) -> Result<&str, String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value == "."
+        || value == ".."
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("invalid identifier".to_owned());
+    }
+    Ok(value)
+}
+
+fn validate_job_action(action: &str) -> Result<&str, String> {
+    match action {
+        "install" | "update" | "uninstall" => Ok(action),
+        _ => Err(format!("unknown action {action}")),
+    }
+}
+
 #[tauri::command]
 async fn get_job(job_id: String) -> Result<serde_json::Value, String> {
+    let job_id = validate_path_segment(&job_id)?;
     client::get(&socket_path(), &format!("/v1/jobs/{job_id}"))
         .await
         .map_err(|error| format!("{error:#}"))
@@ -699,6 +725,8 @@ async fn start_agent_job(
     version: String,
     dry_run: bool,
 ) -> Result<serde_json::Value, String> {
+    let agent_id = validate_path_segment(&agent_id)?;
+    let action = validate_job_action(&action)?;
     client::post_json_decode(
         &socket_path(),
         &format!("/v1/agents/{agent_id}/jobs"),
@@ -715,6 +743,7 @@ async fn start_agent_job(
 
 #[tauri::command]
 async fn get_agent_config(agent_id: String) -> Result<serde_json::Value, String> {
+    let agent_id = validate_path_segment(&agent_id)?;
     client::get(&socket_path(), &format!("/v1/agents/{agent_id}/config"))
         .await
         .map_err(|error| format!("{error:#}"))
@@ -726,6 +755,7 @@ async fn save_agent_config(
     revision: u64,
     config: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let agent_id = validate_path_segment(&agent_id)?;
     client::put_json_decode(
         &socket_path(),
         &format!("/v1/agents/{agent_id}/config"),
@@ -1100,6 +1130,46 @@ mod enrollment_tests {
 
         assert_eq!(status.status, "awaitingAuthentication");
         assert_eq!(opened, ["https://login.example/authorize"]);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{validate_job_action, validate_path_segment};
+
+    #[test]
+    fn path_segments_accept_catalog_identifiers() {
+        for value in ["claude-code", "codex_1", "agent.v2", "a1"] {
+            assert_eq!(validate_path_segment(value).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn path_segments_reject_routing_and_traversal_input() {
+        for value in [
+            "",
+            ".",
+            "..",
+            "../catalog",
+            "a/b",
+            "a b",
+            "a%2Fb",
+            "a?b",
+            "a#b",
+        ] {
+            assert!(validate_path_segment(value).is_err(), "{value:?}");
+        }
+        assert!(validate_path_segment(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn job_actions_are_allowlisted() {
+        for action in ["install", "update", "uninstall"] {
+            assert!(validate_job_action(action).is_ok());
+        }
+        for action in ["", "delete", "install/../../x"] {
+            assert!(validate_job_action(action).is_err());
+        }
     }
 }
 

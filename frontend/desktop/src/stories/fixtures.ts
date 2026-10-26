@@ -14,6 +14,7 @@ export const bootstrap: Bootstrap = {
   settings: { openOnStartup: true, colorMode: "system" },
   version: "0.1.0",
   platform: "macos",
+  architecture: "aarch64",
 };
 
 export const standaloneDaemonInfo: DaemonInfo = {

@@ -10,6 +10,7 @@ import {
   saveAgentConfig,
   startAgentJob,
 } from "./backend";
+import { redactPaths } from "./redact";
 import type {
   AgentAction,
   AgentJob,
@@ -21,7 +22,7 @@ import type {
 type Notice = { tone: "success" | "error"; message: string } | null;
 
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactPaths(error instanceof Error ? error.message : String(error));
 }
 
 function terminal(state: number): boolean {
@@ -34,6 +35,7 @@ export function useAgents(enabled: boolean) {
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [jobPollError, setJobPollError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
   const generation = useRef(0);
@@ -52,6 +54,7 @@ export function useAgents(enabled: boolean) {
       setAgents(nextAgents.agents);
       setJobs(nextJobs.jobs);
       setSync(nextSync);
+      setJobPollError(null);
     } catch (reason) {
       if (current === generation.current) setError(message(reason));
     } finally {
@@ -75,8 +78,11 @@ export function useAgents(enabled: boolean) {
       if (document.hidden) return;
       try {
         setJobs((await getJobs()).jobs);
-      } catch {
-        // Keep the last known job list; the next tick retries.
+        setJobPollError(null);
+      } catch (reason) {
+        // Keep the last known job list; the next tick retries. Surface the
+        // failure so a stalled daemon does not look like "no jobs".
+        setJobPollError(message(reason));
       }
     };
     const start = () => {
@@ -109,7 +115,12 @@ export function useAgents(enabled: boolean) {
           tone: "success",
           message: `${action} started for ${agentId}`,
         });
-        setJobs((await getJobs()).jobs);
+        try {
+          setJobs((await getJobs()).jobs);
+          setJobPollError(null);
+        } catch (reason) {
+          setJobPollError(message(reason));
+        }
       } catch (reason) {
         setNotice({ tone: "error", message: message(reason) });
       } finally {
@@ -158,6 +169,7 @@ export function useAgents(enabled: boolean) {
     loading,
     error,
     notice,
+    jobPollError,
     busyAgent,
     load,
     startJob,

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { redactPaths } from "../redact";
 import type {
   AgentAction,
   AgentConfigResponse,
@@ -29,9 +30,11 @@ export interface AgentsViewProps {
   jobs: AgentJob[];
   sync: SyncStatus | null;
   platform: string;
+  architecture: string;
   loading: boolean;
   error: string | null;
   notice: Notice;
+  jobPollError: string | null;
   busyAgent: string | null;
   onStartJob: (agentId: string, action: AgentAction, version: string) => void;
   onDryRun: (agentId: string, version: string) => Promise<DryRunPlan>;
@@ -83,6 +86,7 @@ function stateFor(
   agent: AgentSummary,
   discovery: Discovery | null,
   platform: string,
+  architecture: string,
 ): {
   label: string;
   tone: string;
@@ -100,13 +104,17 @@ function stateFor(
   const managed = agent.configured !== null && agent.configured !== undefined;
   const latest = agent.versions[0]?.version ?? null;
   const installedVersion = found?.version ?? null;
-  const supported = agent.platforms.includes(platform);
+  const supported =
+    agent.platforms.includes(platform) &&
+    (!agent.architectures.length ||
+      !architecture ||
+      agent.architectures.includes(architecture));
   const update = Boolean(
     installed && latest && installedVersion && installedVersion !== latest,
   );
   if (!supported) {
     return {
-      label: "Unsupported on this platform",
+      label: "Unsupported on this device",
       tone: "muted",
       installed,
       managed,
@@ -165,9 +173,11 @@ export function AgentsView({
   jobs,
   sync,
   platform,
+  architecture,
   loading,
   error,
   notice,
+  jobPollError,
   busyAgent,
   onStartJob,
   onDryRun,
@@ -187,7 +197,9 @@ export function AgentsView({
     agent: AgentSummary;
     plan: DryRunPlan;
   } | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const uninstallTrigger = useRef<HTMLElement | null>(null);
   const activeJob = jobs.find((job) => !isTerminal(job.state)) ?? null;
   const recentJobs = useMemo(
     () =>
@@ -200,7 +212,63 @@ export function AgentsView({
   const normalizedPlatform = platformOf(platform);
 
   useEffect(() => {
-    if (uninstall) confirmRef.current?.focus();
+    if (!uninstall) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const trigger = uninstallTrigger.current;
+    confirmRef.current?.focus();
+
+    const focusable = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setUninstall(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !dialog.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (active === last || !dialog.contains(active))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    const onFocusIn = (event: FocusEvent) => {
+      if (!dialog.contains(event.target as Node)) {
+        event.stopPropagation();
+        confirmRef.current?.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusin", onFocusIn, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("focusin", onFocusIn, true);
+      const triggerUsable =
+        trigger?.isConnected &&
+        !(trigger instanceof HTMLButtonElement && trigger.disabled);
+      const target = triggerUsable
+        ? trigger
+        : document.querySelector<HTMLElement>(".page-heading button");
+      target?.focus();
+    };
   }, [uninstall]);
 
   async function openConfig(agent: AgentSummary) {
@@ -246,6 +314,10 @@ export function AgentsView({
     setActionError(null);
     try {
       const plan = await onDryRun(agent.id, version);
+      uninstallTrigger.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
       setUninstall({ agent, plan });
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason));
@@ -309,7 +381,9 @@ export function AgentsView({
               >
                 <span>{jobStateLabel(job.state)}</span>
                 {job.errorCode ? <code>{job.errorCode}</code> : null}
-                {job.errorMessage ? <span>{job.errorMessage}</span> : null}
+                {job.errorMessage ? (
+                  <span>{redactPaths(job.errorMessage)}</span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -318,11 +392,18 @@ export function AgentsView({
 
       {error || actionError ? (
         <div className="notice notice-error" role="alert">
-          <AlertCircle size={16} /> {error ?? actionError}
+          <AlertCircle size={16} /> {redactPaths(error ?? actionError ?? "")}
         </div>
       ) : notice ? (
         <div className={`notice notice-${notice.tone}`} role="status">
-          {notice.message}
+          {redactPaths(notice.message)}
+        </div>
+      ) : null}
+
+      {jobPollError ? (
+        <div className="notice notice-error" role="status">
+          <AlertCircle size={16} /> Job updates paused:{" "}
+          {redactPaths(jobPollError)}
         </div>
       ) : null}
 
@@ -344,7 +425,12 @@ export function AgentsView({
         ) : agents?.length ? (
           <div className="agent-list">
             {agents.map((agent) => {
-              const state = stateFor(agent, discovery, normalizedPlatform);
+              const state = stateFor(
+                agent,
+                discovery,
+                normalizedPlatform,
+                architecture,
+              );
               const latest = agent.versions[0]?.version ?? "";
               const busy = busyAgent === agent.id || Boolean(activeJob);
               return (
@@ -440,7 +526,7 @@ export function AgentsView({
           />
           {configError ? (
             <p className="notice notice-error" role="alert">
-              {configError}
+              {redactPaths(configError)}
             </p>
           ) : null}
           <button
@@ -456,18 +542,19 @@ export function AgentsView({
       {uninstall ? (
         <div className="agent-modal-backdrop" role="presentation">
           <div
+            ref={dialogRef}
             className="agent-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="uninstall-title"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setUninstall(null);
-            }}
+            aria-describedby="uninstall-description"
           >
             <h3 id="uninstall-title">
               Uninstall {uninstall.agent.displayName}?
             </h3>
-            <p>The daemon will remove these managed paths:</p>
+            <p id="uninstall-description">
+              The daemon will remove these managed paths:
+            </p>
             <ul>
               {uninstall.plan.paths.map((path) => (
                 <li key={path}>

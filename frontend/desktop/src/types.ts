@@ -14,6 +14,7 @@ export interface Bootstrap {
   settings: Settings;
   version: string;
   platform: string;
+  architecture: string;
 }
 
 export interface PlatformCapabilities {
