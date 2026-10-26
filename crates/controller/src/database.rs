@@ -671,6 +671,29 @@ impl Database {
         Ok(result.rows_affected() == 1)
     }
 
+    pub async fn insert_audit(
+        &self,
+        actor: &str,
+        action: &str,
+        device_id: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO audit_events
+                (id, actor, action, device_id, payload_json, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(actor)
+        .bind(action)
+        .bind(device_id)
+        .bind(serde_json::to_string(payload)?)
+        .bind(unix_time_seconds())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn replace_inventory(
         &self,
         device_id: &str,

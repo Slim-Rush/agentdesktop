@@ -961,6 +961,11 @@ async fn handle_job(
             &format!("executor task failed: {error}"),
         ),
     };
+    if status.state == agentdesktop_proto::fleet::JobState::Succeeded as i32
+        && let Some(refresh) = agent.inventory_refresh.as_ref()
+    {
+        let _ = refresh.try_send(());
+    }
     send(sender, agent_message::Message::JobStatus(status)).await
 }
 
@@ -2002,6 +2007,7 @@ mod tests {
             sync_interval: Duration::from_secs(300),
             jobs: crate::jobs::JobExecutor::new(state_dir.clone()),
             installer: None,
+            inventory_refresh: None,
             catalog_sync: None,
         };
         let reconciler = test_reconciler(&state_dir);

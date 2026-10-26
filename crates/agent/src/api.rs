@@ -55,6 +55,8 @@ pub struct AgentRuntime {
     pub sync_interval: Duration,
     pub jobs: JobExecutor,
     pub installer: Option<Arc<dyn Installer>>,
+    /// Request an immediate inventory refresh (for example after an install).
+    pub inventory_refresh: Option<mpsc::Sender<()>>,
     /// A manual catalog-sync request; `None` when no controller is configured.
     pub catalog_sync: Option<mpsc::Sender<()>>,
 }
@@ -542,6 +544,8 @@ struct LocalJobRequest {
     version: String,
     #[serde(default)]
     idempotency_key: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 async fn create_local_job(
@@ -615,6 +619,18 @@ async fn create_local_job(
             "user-level installation is not supported on this platform".to_owned(),
         )
     })?;
+    if request.dry_run && matches!(action, JobAction::Uninstall) {
+        let receipt = installer.load_receipt(&entry.id).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "no managed install receipt for this agent".to_owned(),
+            )
+        })?;
+        return Ok(Json(json!({
+            "dryRun": true,
+            "paths": installer.uninstall_plan(&receipt),
+        })));
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -658,6 +674,11 @@ async fn create_local_job(
             format!("job executor failed: {error}"),
         )
     })?;
+    if status.state == agentdesktop_proto::fleet::JobState::Succeeded as i32
+        && let Some(refresh) = runtime.inventory_refresh.as_ref()
+    {
+        let _ = refresh.try_send(());
+    }
     Ok(Json(status_json(&status)))
 }
 

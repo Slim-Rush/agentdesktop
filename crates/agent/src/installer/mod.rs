@@ -29,6 +29,17 @@ pub trait Installer: Send + Sync {
     fn uninstall(&self, receipt: &Receipt, allow_modified: bool) -> anyhow::Result<()>;
 
     fn load_receipt(&self, agent_id: &str) -> Option<Receipt>;
+
+    /// Recover a crash-interrupted install. The default is a no-op for
+    /// platforms without a journal.
+    fn recover(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Paths an uninstall would remove, without removing them.
+    fn uninstall_plan(&self, receipt: &Receipt) -> Vec<PathBuf> {
+        vec![receipt.binary_path.clone(), receipt.launcher_path.clone()]
+    }
 }
 
 #[cfg(target_os = "macos")]

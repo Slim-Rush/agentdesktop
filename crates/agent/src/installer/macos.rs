@@ -181,6 +181,78 @@ impl MacosInstaller {
         );
         Ok(())
     }
+
+    /// Recover installs interrupted between the pending journal write and the
+    /// committed receipt. A committed receipt means roll forward cleanup; a
+    /// missing/mismatched receipt means roll back to the previous version.
+    pub fn recover(&self) -> anyhow::Result<()> {
+        let installs = self.state_dir.join("installs");
+        let Ok(entries) = fs::read_dir(&installs) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let agent_dir = entry.path();
+            if !agent_dir.is_dir() {
+                continue;
+            }
+            let pending_path = agent_dir.join("pending.json");
+            let Ok(bytes) = fs::read(&pending_path) else {
+                continue;
+            };
+            let pending: PendingInstall = match serde_json::from_slice(&bytes) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %pending_path.display(),
+                        error = %error,
+                        "discarding a corrupt pending install journal"
+                    );
+                    fs::remove_file(&pending_path).ok();
+                    continue;
+                }
+            };
+            let committed = self
+                .load_receipt(&pending.receipt.agent_id)
+                .is_some_and(|receipt| receipt.version == pending.version);
+            if committed {
+                fs::remove_file(&pending_path).ok();
+                fs::remove_dir_all(&pending.staging).ok();
+                remove_old_dirs(&agent_dir);
+                continue;
+            }
+            fs::remove_dir_all(&pending.staging).ok();
+            let version_dir = agent_dir.join(&pending.version);
+            if version_dir.exists() {
+                fs::remove_dir_all(&version_dir).ok();
+            }
+            restore_old_dir(&agent_dir, &version_dir);
+            fs::remove_file(&pending_path).ok();
+        }
+        Ok(())
+    }
+}
+
+fn remove_old_dirs(agent_dir: &Path) {
+    let Ok(entries) = fs::read_dir(agent_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(".old-") {
+            fs::remove_dir_all(entry.path()).ok();
+        }
+    }
+}
+
+fn restore_old_dir(agent_dir: &Path, version_dir: &Path) {
+    let Ok(entries) = fs::read_dir(agent_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(".old-") {
+            fs::rename(entry.path(), version_dir).ok();
+            break;
+        }
+    }
 }
 
 impl Installer for MacosInstaller {
@@ -200,6 +272,27 @@ impl Installer for MacosInstaller {
 
     fn load_receipt(&self, agent_id: &str) -> Option<Receipt> {
         MacosInstaller::load_receipt(self, agent_id)
+    }
+
+    fn recover(&self) -> anyhow::Result<()> {
+        MacosInstaller::recover(self)
+    }
+
+    fn uninstall_plan(&self, receipt: &Receipt) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if receipt.launcher_path.symlink_metadata().is_ok() {
+            paths.push(receipt.launcher_path.clone());
+        }
+        if let Some(version_dir) = receipt.binary_path.parent()
+            && version_dir.exists()
+        {
+            paths.push(version_dir.to_path_buf());
+        }
+        let receipt_path = self.receipt_path(&receipt.agent_id);
+        if receipt_path.exists() {
+            paths.push(receipt_path);
+        }
+        paths
     }
 }
 
@@ -280,7 +373,7 @@ mod tests {
     use flate2::{Compression, write::GzEncoder};
     use tempfile::tempdir;
 
-    use super::MacosInstaller;
+    use super::{MacosInstaller, PendingInstall, Receipt};
 
     fn entry() -> CatalogEntry {
         CatalogEntry {
@@ -390,5 +483,43 @@ mod tests {
             .install("job-1", &entry(), "1.0.0", &artifact)
             .unwrap_err();
         assert!(error.to_string().contains("no files"));
+    }
+
+    #[test]
+    fn recovery_rolls_back_an_uncommitted_pending_install() {
+        let home = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let installer = MacosInstaller::new(home.path().to_owned(), state.path().to_owned());
+        let agent_dir = installer.agent_dir("claude-code");
+        let version_dir = agent_dir.join("1.0.0");
+        let staging = agent_dir.join(".staging-job-1");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        let receipt = Receipt {
+            agent_id: "claude-code".to_owned(),
+            version: "1.0.0".to_owned(),
+            binary_path: version_dir.join("claude"),
+            launcher_path: home.path().join(".local/bin/claude-code"),
+            artifact_sha256: "a".repeat(64),
+            binary_sha256: "b".repeat(64),
+            installed_at_unix_seconds: 1,
+        };
+        let pending = PendingInstall {
+            job_id: "job-1".to_owned(),
+            version: "1.0.0".to_owned(),
+            staging: staging.clone(),
+            receipt,
+        };
+        std::fs::write(
+            agent_dir.join("pending.json"),
+            serde_json::to_vec(&pending).unwrap(),
+        )
+        .unwrap();
+
+        installer.recover().unwrap();
+
+        assert!(!staging.exists());
+        assert!(!version_dir.exists());
+        assert!(!agent_dir.join("pending.json").exists());
     }
 }

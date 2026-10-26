@@ -253,6 +253,19 @@ async fn create_job(
             deadline_unix_seconds: unix_time_seconds() + 900,
         })
         .await?;
+    state
+        .database
+        .insert_audit(
+            &actor.requested_by(),
+            "job.create",
+            &job.device_id,
+            &serde_json::json!({
+                "jobId": job.id,
+                "agentId": job.agent_id,
+                "action": job.action,
+            }),
+        )
+        .await?;
     Ok(Json(job))
 }
 

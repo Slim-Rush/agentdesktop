@@ -255,8 +255,16 @@ fn failed(job: &AgentJob, code: &str, message: &str) -> JobStatus {
         progress_percent: 0,
         error_code: code.to_owned(),
         error_message: message.to_owned(),
-        diagnostics_json: String::new(),
+        diagnostics_json: diagnostics(),
     }
+}
+
+fn diagnostics() -> String {
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+    })
+    .to_string()
 }
 
 fn classify(error: &anyhow::Error) -> (&'static str, String) {
@@ -427,6 +435,7 @@ mod tests {
         );
         assert_eq!(status.state, JobState::Failed as i32);
         assert_eq!(status.error_code, "catalog_changed");
+        assert!(!status.diagnostics_json.is_empty());
     }
 
     #[test]

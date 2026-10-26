@@ -662,6 +662,19 @@ async fn handle_agent_message(
                 )
                 .await?;
             if updated {
+                database
+                    .insert_audit(
+                        &format!("device:{device_id}"),
+                        "job.status",
+                        device_id,
+                        &serde_json::json!({
+                            "jobId": status.job_id,
+                            "attempt": status.attempt,
+                            "state": state.as_str(),
+                            "errorCode": status.error_code,
+                        }),
+                    )
+                    .await?;
                 info!(
                     device_id,
                     job_id = %status.job_id,

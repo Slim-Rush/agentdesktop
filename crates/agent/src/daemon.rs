@@ -586,10 +586,12 @@ where
     let discovery = reconciler.discover().await;
     log_discovery(&discovery);
     let (inventory_sender, inventory) = watch::channel(Arc::new(discovery));
+    let (inventory_refresh_tx, inventory_refresh_rx) = mpsc::channel(1);
     tokio::spawn(refresh_inventory(
         inventory_sender,
         config.inventory_interval,
         reconciler.clone(),
+        inventory_refresh_rx,
     ));
     let (telemetry_sender, telemetry_receiver) = mpsc::channel(256);
     let telemetry = config.controller.as_ref().map(|_| telemetry_sender.clone());
@@ -615,6 +617,14 @@ where
     ));
     #[cfg(not(target_os = "macos"))]
     let installer: Option<Arc<dyn crate::installer::Installer>> = None;
+    if let Some(installer) = &installer
+        && let Err(error) = installer.recover()
+    {
+        tracing::warn!(
+            error = %format!("{error:#}"),
+            "recovering interrupted agent installs failed"
+        );
+    }
     let agent_runtime = Arc::new(AgentRuntime {
         catalog: Arc::new(Mutex::new(catalog)),
         local_config: Arc::new(Mutex::new(local_config_store)),
@@ -623,6 +633,7 @@ where
         sync_interval,
         jobs,
         installer,
+        inventory_refresh: Some(inventory_refresh_tx),
         catalog_sync: has_controller.then_some(catalog_sync_tx),
     });
     if let Some(controller) = config.controller.clone() {
@@ -928,6 +939,7 @@ async fn refresh_inventory(
     sender: watch::Sender<Arc<agentdesktop_core::model::Discovery>>,
     interval: Duration,
     reconciler: reconcile::Reconciler,
+    manual: mpsc::Receiver<()>,
 ) {
     // The watcher owns its change channel so the capacity-one coalescing it
     // relies on cannot be undone here. When it cannot start, a dropped sender
@@ -942,7 +954,10 @@ async fn refresh_inventory(
             (None, mpsc::channel(1).1)
         }
     };
-    refresh_inventory_with(sender, interval, changes, watch, || reconciler.discover()).await;
+    refresh_inventory_with(sender, interval, changes, watch, manual, || {
+        reconciler.discover()
+    })
+    .await;
 }
 
 async fn refresh_inventory_with<F, Fut>(
@@ -950,6 +965,7 @@ async fn refresh_inventory_with<F, Fut>(
     interval: Duration,
     mut changes: mpsc::Receiver<()>,
     mut watch: Option<InventoryWatch>,
+    mut manual: mpsc::Receiver<()>,
     mut discover: F,
 ) where
     F: FnMut() -> Fut,
@@ -972,6 +988,7 @@ async fn refresh_inventory_with<F, Fut>(
         let trigger = tokio::select! {
             _ = ticker.tick() => "interval",
             Some(()) = changes.recv() => "change",
+            Some(()) = manual.recv() => "manual",
         };
         if sender.is_closed() {
             return;
@@ -1403,9 +1420,14 @@ mod tests {
     async fn refuses_to_schedule_a_zero_interval() {
         let (sender, receiver) = watch::channel(Arc::new(discovery(&["codex"])));
         let (_changes_sender, changes) = mpsc::channel(1);
-        super::refresh_inventory_with(sender, Duration::ZERO, changes, None, || async {
-            panic!("a zero interval must not schedule a scan")
-        })
+        super::refresh_inventory_with(
+            sender,
+            Duration::ZERO,
+            changes,
+            None,
+            mpsc::channel(1).1,
+            || async { panic!("a zero interval must not schedule a scan") },
+        )
         .await;
         assert_eq!(receiver.borrow().agents.len(), 1);
     }
@@ -1422,6 +1444,7 @@ mod tests {
                 Duration::from_secs(60),
                 changes,
                 None,
+                mpsc::channel(1).1,
                 move || {
                     let scan = scans.fetch_add(1, Ordering::SeqCst);
                     // The first scan repeats the boot snapshot; every later scan
@@ -1466,6 +1489,7 @@ mod tests {
             Duration::from_secs(3600),
             changes,
             None,
+            mpsc::channel(1).1,
             || async { discovery(&["codex", "cursor"]) },
         ));
 
@@ -1488,6 +1512,7 @@ mod tests {
             Duration::from_secs(60),
             changes,
             None,
+            mpsc::channel(1).1,
             || async { discovery(&["codex", "cursor"]) },
         ));
         drop(receiver);

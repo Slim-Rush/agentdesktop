@@ -4,17 +4,6 @@
 
 ## 🔄 In Progress
 
-### [STORY-202610260c7300b0bf28] User-level agent install and uninstall jobs (macOS first)
-> Spec: docs/specs/STORY-202610260c7300b0bf28.md
-
-- [x] Add job proto messages and ListPendingJobs
-- [x] Add controller job state machine, persistence, and admin API
-- [x] Implement daemon job executor and reconnect handling
-- [x] Implement manifest verification and macOS user-level installer
-- [ ] Implement uninstall receipts, dry-run, and detection
-- [ ] Add diagnostics, audit, tests, and update the HLD
-- [ ] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
-
 ## 🧪 Verifying
 
 ### [STORY-202610230bbca14eaf4e] Reverse-engineer the Agentdesktop architecture baseline
@@ -35,6 +24,17 @@
 - [x] Report AgentState to the controller
 - [x] Add tests and update the HLD
 - [x] Add effective-config resolver with local/managed modes and If-Match Add LocalConfigValidator secret-key denial and redaction
+
+### [STORY-202610260c7300b0bf28] User-level agent install and uninstall jobs (macOS first)
+> Spec: docs/specs/STORY-202610260c7300b0bf28.md
+
+- [x] Add job proto messages and ListPendingJobs
+- [x] Add controller job state machine, persistence, and admin API
+- [x] Implement daemon job executor and reconnect handling
+- [x] Implement manifest verification and macOS user-level installer
+- [x] Implement uninstall receipts, dry-run, and detection
+- [x] Add diagnostics, audit, tests, and update the HLD
+- [x] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
 
 ## ✅ Done
 
