@@ -1,0 +1,394 @@
+//! User-level installation on macOS. No elevation, no system paths.
+
+use std::{
+    fs,
+    io::{Read, Write},
+    path::{Component, Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use agentdesktop_core::catalog::CatalogEntry;
+use anyhow::{Context, bail, ensure};
+use flate2::read::GzDecoder;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tar::Archive;
+
+use super::{Installer, Receipt};
+use crate::secure_fs;
+
+const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PendingInstall {
+    job_id: String,
+    version: String,
+    staging: PathBuf,
+    receipt: Receipt,
+}
+
+/// Installs a `.tar.gz` containing one command-line binary into user-owned
+/// locations under `home` and `state_dir`.
+pub struct MacosInstaller {
+    home: PathBuf,
+    state_dir: PathBuf,
+}
+
+impl MacosInstaller {
+    pub fn new(home: PathBuf, state_dir: PathBuf) -> Self {
+        Self { home, state_dir }
+    }
+
+    pub fn receipt_path(&self, agent_id: &str) -> PathBuf {
+        self.agent_dir(agent_id).join("receipt.json")
+    }
+
+    pub fn load_receipt(&self, agent_id: &str) -> Option<Receipt> {
+        let bytes = fs::read(self.receipt_path(agent_id)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Install or replace one version. Reinstalling an intact identical
+    /// version is a no-op.
+    pub fn install(
+        &self,
+        job_id: &str,
+        entry: &CatalogEntry,
+        version: &str,
+        artifact: &[u8],
+    ) -> anyhow::Result<Receipt> {
+        ensure!(
+            entry.install_kind == agentdesktop_core::catalog::InstallKind::User,
+            "only user-level installs are supported"
+        );
+        let artifact_sha = sha256_hex(artifact);
+        if let Some(receipt) = self.load_receipt(&entry.id)
+            && receipt.version == version
+            && receipt.artifact_sha256 == artifact_sha
+            && receipt.binary_path.is_file()
+        {
+            return Ok(receipt);
+        }
+
+        let agent_dir = self.agent_dir(&entry.id);
+        secure_fs::ensure_private_dir(&agent_dir)?;
+        let staging = agent_dir.join(format!(".staging-{job_id}"));
+        if staging.exists() {
+            fs::remove_dir_all(&staging).ok();
+        }
+        secure_fs::ensure_private_dir(&staging)?;
+        let binary_name = extract_archive(artifact, &staging)?;
+
+        let version_dir = agent_dir.join(version);
+        let binary_path = version_dir.join(&binary_name);
+        let launcher_dir = self.home.join(".local/bin");
+        let launcher_path = launcher_dir.join(&entry.id);
+
+        let mut receipt = Receipt {
+            agent_id: entry.id.clone(),
+            version: version.to_owned(),
+            binary_path: binary_path.clone(),
+            launcher_path: launcher_path.clone(),
+            artifact_sha256: artifact_sha,
+            binary_sha256: String::new(),
+            installed_at_unix_seconds: now_unix_seconds(),
+        };
+        let pending = PendingInstall {
+            job_id: job_id.to_owned(),
+            version: version.to_owned(),
+            staging: staging.clone(),
+            receipt: receipt.clone(),
+        };
+        secure_fs::atomic_write(
+            &agent_dir.join("pending.json"),
+            &serde_json::to_vec(&pending)?,
+            0o600,
+        )?;
+
+        // Publish the payload, then the launcher, then the receipt (the commit
+        // point). A failure before the receipt leaves the previous receipt and
+        // launcher in place.
+        if version_dir.exists() {
+            let old = agent_dir.join(format!(".old-{job_id}"));
+            if old.exists() {
+                fs::remove_dir_all(&old).ok();
+            }
+            fs::rename(&version_dir, &old)?;
+        }
+        fs::rename(&staging, &version_dir)
+            .with_context(|| format!("publish payload to {}", version_dir.display()))?;
+        fs::create_dir_all(&launcher_dir)?;
+        if launcher_path.symlink_metadata().is_ok() {
+            fs::remove_file(&launcher_path).ok();
+        }
+        std::os::unix::fs::symlink(&binary_path, &launcher_path)
+            .with_context(|| format!("link launcher at {}", launcher_path.display()))?;
+        receipt.binary_sha256 = sha256_file(&binary_path)?;
+        secure_fs::atomic_write(
+            &self.receipt_path(&entry.id),
+            &serde_json::to_vec(&receipt)?,
+            0o600,
+        )?;
+        fs::remove_file(agent_dir.join("pending.json")).ok();
+        Ok(receipt)
+    }
+
+    /// Remove the launcher and payload only when the current objects still
+    /// match the receipt. `allow_modified` is an explicit user override.
+    pub fn uninstall(&self, receipt: &Receipt, allow_modified: bool) -> anyhow::Result<()> {
+        self.ensure_managed_path(&receipt.agent_id, &receipt.binary_path)?;
+        self.ensure_managed_path(&receipt.agent_id, &receipt.launcher_path)?;
+
+        if receipt.binary_path.is_file() {
+            let digest = sha256_file(&receipt.binary_path)?;
+            if digest != receipt.binary_sha256 && !allow_modified {
+                bail!("receipt_conflict: installed binary was modified");
+            }
+        }
+        if let Ok(metadata) = receipt.launcher_path.symlink_metadata() {
+            if metadata.file_type().is_symlink() {
+                let target = fs::read_link(&receipt.launcher_path)?;
+                if target != receipt.binary_path && !allow_modified {
+                    bail!("receipt_conflict: launcher points elsewhere");
+                }
+                fs::remove_file(&receipt.launcher_path)?;
+            } else if !allow_modified {
+                bail!("receipt_conflict: launcher is not a symlink");
+            } else {
+                fs::remove_file(&receipt.launcher_path)?;
+            }
+        }
+        if let Some(version_dir) = receipt.binary_path.parent()
+            && version_dir.starts_with(self.agent_dir(&receipt.agent_id))
+        {
+            fs::remove_dir_all(version_dir).ok();
+        }
+        fs::remove_file(self.receipt_path(&receipt.agent_id)).ok();
+        Ok(())
+    }
+
+    fn agent_dir(&self, agent_id: &str) -> PathBuf {
+        self.state_dir.join("installs").join(agent_id)
+    }
+
+    fn ensure_managed_path(&self, agent_id: &str, path: &Path) -> anyhow::Result<()> {
+        let agent_dir = self.agent_dir(agent_id);
+        let launcher_dir = self.home.join(".local/bin");
+        ensure!(
+            path.starts_with(&agent_dir) || path.starts_with(&launcher_dir),
+            "refusing to remove a path outside the managed roots: {}",
+            path.display()
+        );
+        Ok(())
+    }
+}
+
+impl Installer for MacosInstaller {
+    fn install(
+        &self,
+        job_id: &str,
+        entry: &CatalogEntry,
+        version: &str,
+        artifact: &[u8],
+    ) -> anyhow::Result<Receipt> {
+        MacosInstaller::install(self, job_id, entry, version, artifact)
+    }
+
+    fn uninstall(&self, receipt: &Receipt, allow_modified: bool) -> anyhow::Result<()> {
+        MacosInstaller::uninstall(self, receipt, allow_modified)
+    }
+
+    fn load_receipt(&self, agent_id: &str) -> Option<Receipt> {
+        MacosInstaller::load_receipt(self, agent_id)
+    }
+}
+
+fn extract_archive(artifact: &[u8], staging: &Path) -> anyhow::Result<String> {
+    let decoder = GzDecoder::new(artifact);
+    let mut archive = Archive::new(decoder);
+    let mut files = Vec::new();
+    for (index, entry) in archive.entries()?.enumerate() {
+        ensure!(index < MAX_ARCHIVE_ENTRIES, "archive has too many entries");
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        ensure!(
+            path.components()
+                .all(|component| matches!(component, Component::Normal(_))),
+            "archive entry escapes the staging directory: {}",
+            path.display()
+        );
+        let file_type = entry.header().entry_type();
+        ensure!(file_type.is_file(), "only regular files are supported");
+        let target = staging.join(&path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output = fs::File::create(&target)?;
+        std::io::copy(&mut entry, &mut output)?;
+        output.flush()?;
+        files.push(path);
+    }
+    ensure!(!files.is_empty(), "archive contains no files");
+    Ok(files
+        .iter()
+        .find(|path| path.extension().is_none())
+        .unwrap_or(&files[0])
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    Ok(output)
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use agentdesktop_core::catalog::{CatalogEntry, CatalogVersion, DetectionRule, InstallKind};
+    use flate2::{Compression, write::GzEncoder};
+    use tempfile::tempdir;
+
+    use super::MacosInstaller;
+
+    fn entry() -> CatalogEntry {
+        CatalogEntry {
+            id: "claude-code".to_owned(),
+            display_name: "Claude Code".to_owned(),
+            program_key: "claudeCode".to_owned(),
+            platforms: vec!["macos".to_owned()],
+            architectures: vec!["aarch64".to_owned()],
+            install_kind: InstallKind::User,
+            versions: vec![CatalogVersion {
+                version: "1.0.0".to_owned(),
+                artifact_url: "https://example.com/a.tar.gz".to_owned(),
+                sha256: "a".repeat(64),
+                signature: "a".to_owned(),
+            }],
+            detection: DetectionRule { paths: Vec::new() },
+        }
+    }
+
+    fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut encoder);
+            for (path, contents) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(contents.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder.append_data(&mut header, path, *contents).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn installs_and_uninstalls_a_user_binary() {
+        let home = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let installer = MacosInstaller::new(home.path().to_owned(), state.path().to_owned());
+        let artifact = archive(&[("bin/claude", b"#!/bin/sh\necho hi\n")]);
+        let receipt = installer
+            .install("job-1", &entry(), "1.0.0", &artifact)
+            .unwrap();
+        assert!(receipt.binary_path.is_file());
+        assert_eq!(
+            std::fs::read_link(&receipt.launcher_path).unwrap(),
+            receipt.binary_path
+        );
+        installer.uninstall(&receipt, false).unwrap();
+        assert!(!receipt.binary_path.exists());
+        assert!(!receipt.launcher_path.exists());
+    }
+
+    fn malicious_archive() -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut encoder);
+            let mut header = tar::Header::new_gnu();
+            {
+                let gnu = header.as_gnu_mut().unwrap();
+                let name = b"../escape";
+                gnu.name[..name.len()].copy_from_slice(name);
+            }
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &b"x"[..]).unwrap();
+            builder.finish().unwrap();
+        }
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn a_path_traversal_archive_is_rejected() {
+        let home = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let installer = MacosInstaller::new(home.path().to_owned(), state.path().to_owned());
+        let error = installer
+            .install("job-1", &entry(), "1.0.0", &malicious_archive())
+            .unwrap_err();
+        assert!(error.to_string().contains("escapes"));
+    }
+
+    #[test]
+    fn a_modified_binary_refuses_uninstall_without_override() {
+        let home = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let installer = MacosInstaller::new(home.path().to_owned(), state.path().to_owned());
+        let artifact = archive(&[("claude", b"original")]);
+        let receipt = installer
+            .install("job-1", &entry(), "1.0.0", &artifact)
+            .unwrap();
+        std::fs::write(&receipt.binary_path, b"modified").unwrap();
+        let error = installer.uninstall(&receipt, false).unwrap_err();
+        assert!(error.to_string().contains("receipt_conflict"));
+        installer.uninstall(&receipt, true).unwrap();
+    }
+
+    #[test]
+    fn an_empty_archive_is_rejected() {
+        let home = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let installer = MacosInstaller::new(home.path().to_owned(), state.path().to_owned());
+        let artifact = archive(&[]);
+        let error = installer
+            .install("job-1", &entry(), "1.0.0", &artifact)
+            .unwrap_err();
+        assert!(error.to_string().contains("no files"));
+    }
+}

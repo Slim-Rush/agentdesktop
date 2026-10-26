@@ -2,18 +2,18 @@
 
 ## 📋 Backlog
 
+## 🔄 In Progress
+
 ### [STORY-202610260c7300b0bf28] User-level agent install and uninstall jobs (macOS first)
 > Spec: docs/specs/STORY-202610260c7300b0bf28.md
 
-- [ ] Add job proto messages and ListPendingJobs
+- [x] Add job proto messages and ListPendingJobs
 - [ ] Add controller job state machine, persistence, and admin API
 - [ ] Implement daemon job executor and reconnect handling
-- [ ] Implement manifest verification and macOS user-level installer
+- [x] Implement manifest verification and macOS user-level installer
 - [ ] Implement uninstall receipts, dry-run, and detection
 - [ ] Add diagnostics, audit, tests, and update the HLD
 - [ ] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
-
-## 🔄 In Progress
 
 ## 🧪 Verifying
 

@@ -30,6 +30,7 @@ base64 = "0.23"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
+flate2 = "1"
 http-body-util = "0.1"
 humantime-serde = "1"
 hostname = "0.4"
@@ -62,6 +63,7 @@ serde_yaml = "0.9"
 sha2 = "0.11"
 similar = "3.2"
 sqlx = { version = "0.9", default-features = false, features = ["any", "macros", "migrate", "runtime-tokio", "sqlite"] }
+tar = "0.4"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = "0.1"
 tonic = { version = "0.14", features = ["transport", "tls-aws-lc"] }

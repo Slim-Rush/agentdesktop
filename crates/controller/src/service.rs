@@ -4,8 +4,9 @@ use agentdesktop_proto::fleet::{
     AgentMessage, BeginEnrollmentRequest, BeginEnrollmentResponse, CompleteEnrollmentRequest,
     ConfigStatus, ControllerMessage, DeviceCertificateResponse, DeviceUsageRequest,
     DeviceUsageResponse, EnrollResponse, GetAgentCatalogRequest, GetAgentCatalogResponse,
-    LlmGatewayCredentialRequest, LlmGatewayCredentialResponse, RenewDeviceCertificateRequest,
-    agent_message, controller_message, fleet_agent_server::FleetAgent,
+    ListPendingJobsRequest, ListPendingJobsResponse, LlmGatewayCredentialRequest,
+    LlmGatewayCredentialResponse, RenewDeviceCertificateRequest, agent_message, controller_message,
+    fleet_agent_server::FleetAgent,
 };
 use futures_core::Stream;
 use tokio::{sync::mpsc, time};
@@ -280,6 +281,17 @@ impl FleetAgent for FleetAgentService {
                 snapshot.signed_catalog_json.clone()
             },
         }))
+    }
+
+    async fn list_pending_jobs(
+        &self,
+        request: Request<ListPendingJobsRequest>,
+    ) -> Result<Response<ListPendingJobsResponse>, Status> {
+        let device_id = self.authenticate_device(&request).await?;
+        let _ = device_id;
+        // Job persistence is added by the next change; the RPC is present so a
+        // daemon can reconnect without a protocol error.
+        Ok(Response::new(ListPendingJobsResponse { jobs: Vec::new() }))
     }
 
     async fn connect(
@@ -602,6 +614,15 @@ async fn handle_agent_message(
                 stale = state.stale,
                 agents = state.agents.len(),
                 "stored agent state"
+            );
+        }
+        Some(agent_message::Message::JobStatus(status)) => {
+            debug!(
+                device_id,
+                job_id = %status.job_id,
+                attempt = status.attempt,
+                state = status.state,
+                "received job status"
             );
         }
         None => {}

@@ -91,6 +91,7 @@ pub struct CatalogPublicKey {
 #[derive(Clone, Debug)]
 pub struct CatalogSnapshot {
     pub catalog: Catalog,
+    pub key_id: String,
     pub canonical_bytes: Vec<u8>,
     pub sha256: String,
     /// The signed envelope, suitable for serving to a daemon.
@@ -131,6 +132,7 @@ impl SignedCatalog {
         Ok(CatalogSnapshot {
             sha256: sha256_hex(&canonical_bytes),
             catalog: self.catalog.clone(),
+            key_id: self.key_id.clone(),
             canonical_bytes,
             signed_catalog_json: serde_json::to_vec(self)
                 .context("encode signed catalog envelope")?,

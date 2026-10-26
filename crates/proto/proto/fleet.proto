@@ -9,6 +9,7 @@ service FleetAgent {
   rpc GetLlmGatewayCredential(LlmGatewayCredentialRequest) returns (LlmGatewayCredentialResponse);
   rpc GetDeviceUsage(DeviceUsageRequest) returns (DeviceUsageResponse);
   rpc GetAgentCatalog(GetAgentCatalogRequest) returns (GetAgentCatalogResponse);
+  rpc ListPendingJobs(ListPendingJobsRequest) returns (ListPendingJobsResponse);
   rpc Connect(stream AgentMessage) returns (stream ControllerMessage);
 }
 
@@ -131,6 +132,7 @@ message AgentMessage {
     ConfigStatus config_status = 4;
     TelemetryEvent telemetry = 5;
     AgentState agent_state = 6;
+    JobStatus job_status = 7;
   }
 }
 
@@ -192,6 +194,7 @@ message ToolUseEvent {
 message ControllerMessage {
   oneof message {
     DaemonConfig daemon_config = 1;
+    AgentJob agent_job = 2;
   }
 }
 
@@ -294,4 +297,59 @@ enum ProgramState {
   // policy's `programSelection.allowUserChoice` permits this); its managed
   // content is removed. An older controller reads this as unspecified.
   PROGRAM_STATE_OPTED_OUT = 8;
+}
+
+message ListPendingJobsRequest {}
+
+message ListPendingJobsResponse {
+  repeated AgentJob jobs = 1;
+}
+
+enum JobAction {
+  JOB_ACTION_UNSPECIFIED = 0;
+  JOB_ACTION_INSTALL = 1;
+  JOB_ACTION_UNINSTALL = 2;
+  JOB_ACTION_UPDATE = 3;
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_DISPATCHED = 2;
+  JOB_STATE_ACCEPTED = 3;
+  JOB_STATE_RUNNING = 4;
+  JOB_STATE_CANCEL_REQUESTED = 5;
+  JOB_STATE_SUCCEEDED = 6;
+  JOB_STATE_FAILED = 7;
+  JOB_STATE_CANCELLED = 8;
+  JOB_STATE_EXPIRED = 9;
+}
+
+// One install/uninstall/update task. The daemon resolves `agent_id` and
+// `version` against the verified catalog bound by catalog_revision/sha256.
+message AgentJob {
+  string job_id = 1;
+  uint32 attempt = 2;
+  string idempotency_key = 3;
+  // "admin" or "local".
+  string origin = 4;
+  string requested_by = 5;
+  string catalog_id = 6;
+  uint64 catalog_revision = 7;
+  string catalog_sha256 = 8;
+  string agent_id = 9;
+  string version = 10;
+  JobAction action = 11;
+  uint64 deadline_unix_seconds = 12;
+}
+
+message JobStatus {
+  string job_id = 1;
+  uint32 attempt = 2;
+  JobState state = 3;
+  uint32 progress_percent = 4;
+  string error_code = 5;
+  string error_message = 6;
+  // Redacted diagnostic JSON: OS/arch, free disk, target root, stderr tail.
+  string diagnostics_json = 7;
 }

@@ -2,11 +2,11 @@ schema_version: 1
 id: STORY-202610260c7300b0bf28
 title: User-level agent install and uninstall jobs (macOS first)
 spec_path: docs/specs/STORY-202610260c7300b0bf28.md
-status: backlog
+status: in_progress
 tasks:
 - id: task-6c7e4a2ace
   title: Add job proto messages and ListPendingJobs
-  completed: false
+  completed: true
 - id: task-5521b8ece4
   title: Add controller job state machine, persistence, and admin API
   completed: false
@@ -15,7 +15,7 @@ tasks:
   completed: false
 - id: task-cb36214131
   title: Implement manifest verification and macOS user-level installer
-  completed: false
+  completed: true
 - id: task-7b45cc8903
   title: Implement uninstall receipts, dry-run, and detection
   completed: false
@@ -27,4 +27,4 @@ tasks:
     recovery and receipt object verification
   completed: false
 created_at: '2026-10-26T02:15:17+00:00'
-updated_at: '2026-10-26T02:54:54+00:00'
+updated_at: '2026-10-26T03:20:02+00:00'
