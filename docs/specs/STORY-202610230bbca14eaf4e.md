@@ -30,6 +30,8 @@ The baseline MUST document the system context (actors, external services) and
 containers (desktop app, daemon, controller, frontends, data stores) at C4
 levels 1–2 in `docs/architecture/overview.md`, and the Mermaid container diagram
 in `docs/architecture/graphs/system_design.mmd` MUST agree with that text.
+`docs/architecture/graphs/system_design_target.mmd` is the Phase 1 target
+architecture and is explicitly not part of this baseline.
 
 ### R2: Crate responsibilities and dependency direction (MUST)
 
@@ -176,8 +178,9 @@ dynamic/deployment supporting views), verified 2026-10-23.
 | Device | Read another device's usage | Usage records | Deny — the device ID is taken from the certificate, never the request |
 | Unauthenticated caller | Open the fleet `Connect` stream | Controller stream | Deny — missing device certificate |
 | Caller whose OIDC principal differs from the enrolled user | Any authenticated RPC | Enrolled device | Deny (`permission_denied`, `service.rs:411`) |
-| Managed tool | Use another client's proxy prefix | Local LLM proxy | Deny — the fixed route prefix decides `client_id`; the pairing is checked in constant time |
-| Platform admin on the loopback admin listener | Read or delete device records | Controller database | Allow — admin API is bound to the loopback address |
+| Local process with a valid pairing | Use any configured proxy prefix | Local LLM proxy | Allow — the prefix selects `client_id`; the caller executable is not authenticated |
+| Calling tool | Assert a client label | Gateway policy | Attribution only — the label is not proof of executable identity |
+| Local process able to reach the loopback admin listener | Read or delete device records | Controller database | Allow — loopback is the only boundary; no admin authentication exists today |
 | Device user | Opt out of a configured program | Program selection | Allow only when `programSelection.allowUserChoice` is set |
 
 ## Trust Boundaries
@@ -196,7 +199,8 @@ dynamic/deployment supporting views), verified 2026-10-23.
 - OIDC authorization response or device code → state/PKCE/device-code validation
   → controller certificate issuance.
 - Gateway OTLP export → usage bearer token → usage ingest → hourly/daily rollups.
-- Admin HTTP request → loopback-only admin listener → controller database.
+- Admin HTTP request → loopback-only admin listener (no authentication today) →
+  controller database.
 
 ## Acceptance Criteria
 

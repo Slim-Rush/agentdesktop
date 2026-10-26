@@ -1,24 +1,19 @@
+%% Current implemented architecture (baseline).
+%% Phase 1 target additions live in system_design_target.mmd.
 graph TB
     subgraph Workstation["Developer workstation"]
         Desktop["Agent Desktop<br/>(Tauri, crates/agentdesktop)"]
         Daemon["Agent daemon<br/>(crates/agent)"]
         Client["Local client<br/>(crates/client)"]
-        CatalogCache["Catalog cache<br/>(signed, last-known-good)"]
-        LocalConfig["Local config authority<br/>(local-config.yaml)"]
-        JobExec["Job executor<br/>(crates/agent/jobs)"]
-        Installer["macOS user-level installer<br/>(no sudo)"]
-        Receipts["Install receipts<br/>(managed paths)"]
         Tools["Managed developer tools<br/>Claude Code, Claude Desktop, Codex,<br/>OpenCode, Grok, Copilot, VS Code"]
         DiscoveryOnly["Discovery-only tools<br/>Cursor, Ollama"]
-        State["Local state<br/>config, identity, usage, receipts"]
+        State["Local state<br/>config, device identity,<br/>usage store"]
     end
 
     subgraph Controller["Fleet controller (crates/controller)"]
         Fleet["Fleet gRPC API<br/>FleetAgent"]
         Admin["Admin HTTP API<br/>/api/v1/*"]
-        Catalog["Agent catalog<br/>(signed manifest)"]
-        Jobs["Job dispatcher<br/>(agent_jobs)"]
-        DB[("SQLite / PostgreSQL<br/>devices, catalog state, jobs,<br/>discoveries, usage")]
+        DB[("SQLite / PostgreSQL<br/>devices, discoveries,<br/>program status, usage")]
         CA["Device CA"]
         JWTSigner["Gateway JWT issuer<br/>JWKS"]
         UsageIngest["Usage ingest<br/>OTLP logs"]
@@ -42,27 +37,12 @@ graph TB
     Daemon --> State
     Desktop -->|"Tauri commands"| Client
 
-    Desktop -->|"local API: catalog,<br/>config, job status"| Daemon
-    Daemon --> CatalogCache
-    Daemon --> LocalConfig
-    Daemon --> JobExec
-    JobExec --> Installer
-    Installer -->|"install/uninstall"| Tools
-    Installer --> Receipts
-
     Daemon -->|"gRPC over TLS<br/>device cert + OIDC token"| Fleet
     Fleet --> DB
     Fleet --> CA
     Fleet --> JWTSigner
-    Fleet -->|"catalog + jobs<br/>(optional enterprise config push)"| Daemon
-    Daemon -->|"inventory, agent state,<br/>job status, telemetry, usage"| Fleet
-
-    Admin --> Jobs
-    Admin --> DB
-    Jobs --> DB
-    Jobs --> Fleet
-    Catalog --> Fleet
-    Admin --> Catalog
+    Fleet -->|"daemon config push<br/>stream"| Daemon
+    Daemon -->|"inventory, config status,<br/>telemetry, usage"| Fleet
 
     Daemon -->|"device authorization /<br/>code exchange"| OIDC
     Fleet --> OIDC
@@ -74,6 +54,7 @@ graph TB
 
     AdminUser --> AdminUI
     AdminUI -->|"HTTP JSON /api/v1/*"| Admin
+    Admin --> DB
     Admin --> JWTSigner
 
     classDef external fill:#eee,stroke:#999;

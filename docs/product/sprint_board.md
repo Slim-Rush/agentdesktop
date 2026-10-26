@@ -19,6 +19,7 @@
 - [ ] Implement local config store and local API endpoints
 - [ ] Report AgentState to the controller
 - [ ] Add tests and update the HLD
+- [ ] Add effective-config resolver with local/managed modes and If-Match Add LocalConfigValidator secret-key denial and redaction
 
 ### [STORY-202610260c7300b0bf28] User-level agent install and uninstall jobs (macOS first)
 > Spec: docs/specs/STORY-202610260c7300b0bf28.md
@@ -29,6 +30,7 @@
 - [ ] Implement manifest verification and macOS user-level installer
 - [ ] Implement uninstall receipts, dry-run, and detection
 - [ ] Add diagnostics, audit, tests, and update the HLD
+- [ ] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
 
 ## 🔄 In Progress
 
