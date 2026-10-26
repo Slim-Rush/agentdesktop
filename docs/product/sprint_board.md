@@ -6,6 +6,10 @@
 
 ## 🧪 Verifying
 
+## ✅ Done
+
+## 📦 Archived
+
 ### [STORY-202610230bbca14eaf4e] Reverse-engineer the Agentdesktop architecture baseline
 > Spec: docs/specs/STORY-202610230bbca14eaf4e.md
 
@@ -37,7 +41,3 @@
 - [x] Add diagnostics, audit, tests, and update the HLD
 - [x] Add admin authentication and local-origin job entry Implement journaled crash recovery and receipt object verification
 - [x] Fix QA P1: identifier validation, catalog expiry, archive size, transitions
-
-## ✅ Done
-
-## 📦 Archived

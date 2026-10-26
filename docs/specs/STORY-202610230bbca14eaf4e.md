@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | ID | STORY-202610230bbca14eaf4e |
-| Status | Draft |
+| Status | Done |
 | Priority | P1 |
 | Release | 0.1.1 |
 
