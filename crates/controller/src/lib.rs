@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod daemon_config;
 pub mod database;
 pub mod device_ca;
+pub(crate) mod device_identity;
 pub mod gateway_jwt;
 pub mod jobs;
 pub mod oidc;

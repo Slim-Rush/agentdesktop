@@ -9,20 +9,22 @@ import {
   UsageNotes,
 } from "@agentdesktop/ui";
 import {
+  Archive,
   ArrowLeft,
+  Ban,
   Box,
   ChartColumn,
   ChevronRight,
   CircleAlert,
   Code2,
   Cpu,
-  Trash2,
 } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import {
   ConfigBadge,
   DefinitionList,
+  DeviceStateBadge,
   OnlineBadge,
 } from "../components/DeviceTable";
 import {
@@ -32,28 +34,45 @@ import {
   friendlyOs,
 } from "../format";
 import { Link } from "../router";
-import type { DeviceDetail, ProgramStatus, UsageReport } from "../types";
+import type {
+  AuditPage,
+  DeviceDetail,
+  ProgramStatus,
+  UsageReport,
+} from "../types";
 
 export interface DeviceViewProps {
-  deleteError: string | null;
-  deleteOpen: boolean;
-  deleting: boolean;
+  audit: AuditPage | null;
+  auditError: string | null;
+  auditLoadError: string | null;
+  auditLoading: boolean;
+  auditLoadingMore: boolean;
   device: DeviceDetail;
-  onDeleteCancel: () => void;
-  onDeleteConfirm: () => void;
-  onDeleteRequest: () => void;
+  onAuditLoadMore?: () => void;
+  onTransitionCancel: () => void;
+  onTransitionConfirm: () => void;
+  onTransitionRequest: (target: "retired" | "revoked") => void;
+  transitionError: string | null;
+  transitionTarget: "retired" | "revoked" | null;
+  transitioning: boolean;
   /** This device's last 30 days, when the controller has usage. */
   usage?: UsageReport | null;
 }
 
 export function DeviceView({
-  deleteError,
-  deleteOpen,
-  deleting,
+  audit,
+  auditError,
+  auditLoadError,
+  auditLoading,
+  auditLoadingMore,
   device,
-  onDeleteCancel,
-  onDeleteConfirm,
-  onDeleteRequest,
+  onAuditLoadMore,
+  onTransitionCancel,
+  onTransitionConfirm,
+  onTransitionRequest,
+  transitionError,
+  transitionTarget,
+  transitioning,
   usage,
 }: DeviceViewProps) {
   const modelCount = device.model_runtimes.reduce(
@@ -65,11 +84,17 @@ export function DeviceView({
       <Link href="/devices" className="back-link">
         <ArrowLeft size={15} /> Back to devices
       </Link>
+      <p className="sr-only" role="status" aria-live="polite">
+        Device {device.hostname} is {device.state}.
+      </p>
       <section className="device-hero">
         <div className="device-identity">
           <div>
             <h2>{device.hostname}</h2>
-            <OnlineBadge timestamp={device.last_seen_at} />
+            <div className="device-badges">
+              <OnlineBadge timestamp={device.last_seen_at} />
+              <DeviceStateBadge state={device.state} />
+            </div>
           </div>
           <p>{device.id}</p>
         </div>
@@ -120,6 +145,60 @@ export function DeviceView({
           )}
         </section>
       </div>
+      <section className="card detail-card device-lifecycle">
+        <CardHeader
+          title="Device lifecycle"
+          description="Access state and identity continuity"
+        />
+        <div className="device-lifecycle-summary">
+          <DeviceStateBadge state={device.state} />
+          {device.retired_at ? (
+            <span className="device-muted">
+              Left active {formatTime(device.retired_at)}
+            </span>
+          ) : (
+            <span className="device-muted">
+              {device.active_devices_for_subject} active device
+              {device.active_devices_for_subject === 1 ? "" : "s"} for this user
+            </span>
+          )}
+        </div>
+        <DefinitionList
+          entries={[
+            [
+              "Active devices for this user",
+              String(device.active_devices_for_subject),
+            ],
+            ["Replaces", device.replaces_device_id ?? "No predecessor"],
+            ["Superseded by", device.superseded_by ?? "Not replaced"],
+            ["Retired at", formatTime(device.retired_at)],
+          ]}
+        />
+        <div className="device-lifecycle-actions">
+          {device.state === "active" ? (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => onTransitionRequest("retired")}
+            >
+              <Archive size={14} /> Retire device
+            </button>
+          ) : null}
+          {device.state !== "revoked" ? (
+            <button
+              type="button"
+              className="destructive-button"
+              onClick={() => onTransitionRequest("revoked")}
+            >
+              <Ban size={14} /> Revoke device
+            </button>
+          ) : null}
+        </div>
+        <p className="device-muted">
+          Retired and revoked devices lose fleet access. Their jobs, usage, and
+          audit history are kept.
+        </p>
+      </section>
       {device.programs_reported !== null && (
         <section className="card table-card">
           <CardHeader
@@ -239,6 +318,55 @@ export function DeviceView({
           </div>
         )}
       </section>
+      <section className="card table-card">
+        <CardHeader
+          title="Audit history"
+          description="Lifecycle and job events across this device's lineage"
+        />
+        {auditLoadError ? (
+          <div className="error-callout">
+            <CircleAlert size={16} />
+            <span>{auditLoadError}</span>
+          </div>
+        ) : null}
+        {auditLoading ? (
+          <p className="empty-state compact">Loading audit history…</p>
+        ) : auditError ? (
+          <div className="error-callout">
+            <CircleAlert size={16} />
+            <span>{auditError}</span>
+          </div>
+        ) : audit?.events.length ? (
+          <>
+            <div className="audit-list">
+              {audit.events.map((event) => (
+                <div className="audit-row" key={event.id}>
+                  <span className="audit-action">{event.action}</span>
+                  <span className="audit-actor">{event.actor}</span>
+                  <code title={JSON.stringify(event.payload)}>
+                    {summarizePayload(event.payload)}
+                  </code>
+                  <time>{formatTime(event.created_at)}</time>
+                </div>
+              ))}
+            </div>
+            {audit.nextCursor && onAuditLoadMore ? (
+              <button
+                type="button"
+                className="button secondary"
+                disabled={auditLoadingMore}
+                onClick={onAuditLoadMore}
+              >
+                {auditLoadingMore ? "Loading…" : "Load more"}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <p className="empty-state compact">
+            No audit events have been recorded for this device.
+          </p>
+        )}
+      </section>
       <section className="card detail-card">
         <CardHeader
           title="Enrollment identity"
@@ -251,31 +379,16 @@ export function DeviceView({
           ]}
         />
       </section>
-      <section className="danger-zone">
-        <div>
-          <h3>Delete device</h3>
-          <p>
-            Remove this device, its credential, inventory, telemetry, and
-            configuration status.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="destructive-button"
-          onClick={onDeleteRequest}
-        >
-          <Trash2 size={14} /> Delete device
-        </button>
-      </section>
-      {deleteOpen && (
-        <DeleteDeviceDialog
+      {transitionTarget ? (
+        <TransitionDeviceDialog
           hostname={device.hostname}
-          deleting={deleting}
-          error={deleteError}
-          onCancel={onDeleteCancel}
-          onConfirm={onDeleteConfirm}
+          target={transitionTarget}
+          busy={transitioning}
+          error={transitionError}
+          onCancel={onTransitionCancel}
+          onConfirm={onTransitionConfirm}
         />
-      )}
+      ) : null}
     </div>
   );
 }
@@ -328,40 +441,47 @@ function DeviceUsage({
   );
 }
 
-function DeleteDeviceDialog({
+function TransitionDeviceDialog({
   hostname,
-  deleting,
+  target,
+  busy,
   error,
   onCancel,
   onConfirm,
 }: {
   hostname: string;
-  deleting: boolean;
+  target: "retired" | "revoked";
+  busy: boolean;
   error: string | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const confirm = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     dialog.current?.showModal();
+    confirm.current?.focus();
     return () => dialog.current?.close();
   }, []);
+  const retiring = target === "retired";
   return (
     <dialog
       ref={dialog}
       className="delete-dialog"
-      aria-labelledby="delete-device-title"
+      aria-labelledby="transition-device-title"
       onCancel={(event) => {
         event.preventDefault();
         onCancel();
       }}
     >
       <div className="dialog-body">
-        <h2 id="delete-device-title">Delete {hostname || "this device"}?</h2>
+        <h2 id="transition-device-title">
+          {retiring ? "Retire" : "Revoke"} {hostname || "this device"}?
+        </h2>
         <p>
-          This removes the device credential and all controller inventory. A
-          running agent will be rejected the next time it connects and must be
-          re-enrolled.
+          {retiring
+            ? "The device loses fleet access immediately. It can be re-enrolled with a new device record, and its jobs, usage, and audit history stay available."
+            : "The device is permanently revoked. It cannot be auto-linked by a re-enrollment or reinstated from this screen; its history is kept."}
         </p>
         {error && <div className="dialog-error">{error}</div>}
       </div>
@@ -369,22 +489,34 @@ function DeleteDeviceDialog({
         <button
           type="button"
           className="button secondary"
-          disabled={deleting}
+          disabled={busy}
           onClick={onCancel}
         >
           Cancel
         </button>
         <button
+          ref={confirm}
           type="button"
           className="destructive-button"
-          disabled={deleting}
+          disabled={busy}
           onClick={onConfirm}
         >
-          {deleting ? "Deleting…" : "Delete device"}
+          {busy
+            ? retiring
+              ? "Retiring…"
+              : "Revoking…"
+            : retiring
+              ? "Retire device"
+              : "Revoke device"}
         </button>
       </div>
     </dialog>
   );
+}
+
+function summarizePayload(payload: Record<string, unknown>) {
+  const encoded = JSON.stringify(payload);
+  return encoded.length > 120 ? `${encoded.slice(0, 117)}…` : encoded;
 }
 
 function friendlyEvent(kind: string) {

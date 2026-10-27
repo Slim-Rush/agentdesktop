@@ -1,12 +1,14 @@
 import type { UsageDimension } from "@agentdesktop/ui";
 import { useEffect, useState } from "react";
 
-import { useApi } from "./api";
+import { adminWrite, useApi } from "./api";
 import { ControllerShell } from "./components/ControllerShell";
 import { ErrorState, NotFound, PageSkeleton } from "./components/ViewStates";
-import { navigate, usePath } from "./router";
+import { usePath } from "./router";
 import type {
   ActiveDaemonConfig,
+  AuditEvent,
+  AuditPage,
   ControllerSettings,
   Device,
   DeviceDetail,
@@ -68,6 +70,9 @@ function DevicePage({ id }: { id: string }) {
   const query = useApi<DeviceDetail>(
     `/api/v1/devices/${encodeURIComponent(id)}`,
   );
+  const audit = useApi<AuditPage>(
+    `/api/v1/devices/${encodeURIComponent(id)}/audit?limit=50`,
+  );
   const usage = useApi<UsageReport>(
     `/api/v1/usage?${new URLSearchParams({
       range: "30d",
@@ -76,23 +81,63 @@ function DevicePage({ id }: { id: string }) {
       utcOffsetMinutes: String(utcOffsetMinutes()),
     })}`,
   );
-  const [showDelete, setShowDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [transitionTarget, setTransitionTarget] = useState<
+    "retired" | "revoked" | null
+  >(null);
+  const [transitioning, setTransitioning] = useState(false);
+  const [transitionError, setTransitionError] = useState<string | null>(null);
+  const [moreAudit, setMoreAudit] = useState<AuditEvent[]>([]);
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
+  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  const [auditLoadError, setAuditLoadError] = useState<string | null>(null);
 
-  async function deleteDevice() {
-    setDeleting(true);
-    setDeleteError(null);
+  useEffect(() => {
+    setMoreAudit([]);
+    setAuditCursor(audit.data?.nextCursor ?? null);
+    setAuditLoadError(null);
+  }, [audit.data]);
+
+  async function transitionDevice() {
+    if (!transitionTarget) return;
+    setTransitioning(true);
+    setTransitionError(null);
     try {
-      const response = await fetch(
-        `/api/v1/devices/${encodeURIComponent(id)}`,
-        { method: "DELETE" },
+      const action = transitionTarget === "retired" ? "retire" : "revoke";
+      const response = await adminWrite(
+        `/api/v1/devices/${encodeURIComponent(id)}/${action}`,
+        { method: "POST" },
       );
       if (!response.ok) throw new Error(await response.text());
-      navigate("/devices");
+      setTransitionTarget(null);
+      query.reload();
+      audit.reload();
     } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : "Delete failed");
-      setDeleting(false);
+      setTransitionError(
+        error instanceof Error ? error.message : "Lifecycle change failed",
+      );
+    } finally {
+      setTransitioning(false);
+    }
+  }
+
+  async function loadMoreAudit() {
+    if (!auditCursor) return;
+    setAuditLoadingMore(true);
+    setAuditLoadError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/devices/${encodeURIComponent(id)}/audit?limit=50&before=${encodeURIComponent(auditCursor)}`,
+      );
+      if (!response.ok) throw new Error(await response.text());
+      const page = (await response.json()) as AuditPage;
+      setMoreAudit((events) => [...events, ...page.events]);
+      setAuditCursor(page.nextCursor);
+    } catch (error) {
+      setAuditLoadError(
+        error instanceof Error ? error.message : "Audit history failed",
+      );
+    } finally {
+      setAuditLoadingMore(false);
     }
   }
 
@@ -100,18 +145,34 @@ function DevicePage({ id }: { id: string }) {
   if (query.error || !query.data) return <ErrorState message={query.error} />;
   return (
     <DeviceView
-      deleteError={deleteError}
-      deleteOpen={showDelete}
-      deleting={deleting}
+      audit={
+        audit.data
+          ? {
+              events: [...audit.data.events, ...moreAudit],
+              nextCursor: auditCursor,
+            }
+          : null
+      }
+      auditError={audit.error}
+      auditLoadError={auditLoadError}
+      auditLoading={audit.loading}
+      auditLoadingMore={auditLoadingMore}
       device={query.data}
-      onDeleteCancel={() => {
-        if (!deleting) {
-          setShowDelete(false);
-          setDeleteError(null);
+      onAuditLoadMore={auditCursor ? loadMoreAudit : undefined}
+      onTransitionCancel={() => {
+        if (!transitioning) {
+          setTransitionTarget(null);
+          setTransitionError(null);
         }
       }}
-      onDeleteConfirm={deleteDevice}
-      onDeleteRequest={() => setShowDelete(true)}
+      onTransitionConfirm={transitionDevice}
+      onTransitionRequest={(target) => {
+        setTransitionError(null);
+        setTransitionTarget(target);
+      }}
+      transitionError={transitionError}
+      transitionTarget={transitionTarget}
+      transitioning={transitioning}
       usage={usage.data}
     />
   );

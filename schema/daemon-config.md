@@ -2,6 +2,12 @@
 
 |Field|Type|Description|
 |-|-|-|
+|`agentCatalog`|object|Signed agent catalog and local-configuration mode.<br><br>Omit for the pre-catalog behavior. A BYOD device sets `configMode: local`<br>and pins one or more catalog public keys here.|
+|`agentCatalog.publicKeys`|[]object|Pinned Ed25519 public keys. A key id not in this set is rejected.|
+|`agentCatalog.publicKeys[].keyId`|string||
+|`agentCatalog.publicKeys[].publicKey`|string|Base64 raw 32-byte Ed25519 public key.|
+|`agentCatalog.syncInterval`|string|Catalog sync interval. Defaults to five minutes.|
+|`configMode`|enum|How per-agent configuration is chosen. Defaults to `managed` so existing<br>controller-managed deployments keep their current behavior.<br>Possible values: `local`, `managed`.|
 |`controller`|object|Controller connection settings. Omit this field to run without fleet management.|
 |`controller.address`|string|HTTPS address of the controller's fleet API.|
 |`controller.caCertificatePath`|string|Path to a PEM-encoded CA certificate used to verify the controller.<br><br>Omit this field to use the operating system's trusted certificate roots.|

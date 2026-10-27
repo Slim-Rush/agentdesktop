@@ -3,6 +3,7 @@ import { expect, fn, userEvent, within } from "storybook/test";
 
 import { ControllerStoryFrame } from "../stories/ControllerStoryFrame";
 import {
+  deviceAudit,
   deviceDetail,
   deviceUsageReport,
   emptyDeviceDetail,
@@ -10,6 +11,7 @@ import {
   failedDeviceDetail,
   oldAgentDeviceDetail,
   optedOutDeviceDetail,
+  retiredDeviceDetail,
 } from "../stories/fixtures";
 import { DeviceView } from "./DeviceView";
 
@@ -26,13 +28,19 @@ const meta = {
   parameters: { layout: "fullscreen" },
   tags: ["test"],
   args: {
-    deleteError: null,
-    deleteOpen: false,
-    deleting: false,
+    audit: deviceAudit,
+    auditError: null,
+    auditLoadError: null,
+    auditLoading: false,
+    auditLoadingMore: false,
     device: deviceDetail,
-    onDeleteCancel: fn(),
-    onDeleteConfirm: fn(),
-    onDeleteRequest: fn(),
+    onAuditLoadMore: fn(),
+    onTransitionCancel: fn(),
+    onTransitionConfirm: fn(),
+    onTransitionRequest: fn(),
+    transitionError: null,
+    transitionTarget: null,
+    transitioning: false,
   },
 } satisfies Meta<typeof DeviceView>;
 
@@ -104,38 +112,56 @@ export const NoActivityOrTools: Story = {
   args: { device: emptyDeviceDetail },
 };
 
-export const RequestsDeletion: Story = {
-  play: async ({ args, canvas }) => {
-    await userEvent.click(
-      canvas.getByRole("button", { name: "Delete device" }),
-    );
-    await expect(args.onDeleteRequest).toHaveBeenCalledOnce();
+export const AuditLoadMoreFailed: Story = {
+  args: { auditLoadError: "Audit history could not be loaded." },
+  play: async ({ canvas }) => {
+    await expect(
+      canvas.getByText("Audit history could not be loaded."),
+    ).toBeVisible();
   },
 };
 
-export const DeleteConfirmation: Story = {
-  args: { deleteOpen: true },
+export const RetiredDeviceWithHistory: Story = {
+  args: { device: retiredDeviceDetail },
+  play: async ({ canvas }) => {
+    await expect(canvas.getAllByText("Retired")[0]).toBeVisible();
+    await expect(canvas.getByText("device-mac-old-00000001")).toBeVisible();
+    await expect(canvas.getByText("device.re_enrolled")).toBeVisible();
+  },
+};
+
+export const RequestsRetirement: Story = {
+  play: async ({ args, canvas }) => {
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Retire device" }),
+    );
+    await expect(args.onTransitionRequest).toHaveBeenCalledWith("retired");
+  },
+};
+
+export const RetireConfirmation: Story = {
+  args: { transitionTarget: "retired" },
   play: async ({ args, canvas }) => {
     const dialog = within(canvas.getByRole("dialog"));
     await expect(
-      dialog.getByRole("heading", { name: "Delete dev-mac?" }),
+      dialog.getByRole("heading", { name: "Retire dev-mac?" }),
     ).toBeVisible();
     await userEvent.click(
-      dialog.getByRole("button", { name: "Delete device" }),
+      dialog.getByRole("button", { name: "Retire device" }),
     );
-    await expect(args.onDeleteConfirm).toHaveBeenCalledOnce();
+    await expect(args.onTransitionConfirm).toHaveBeenCalledOnce();
   },
 };
 
-export const DeleteFailed: Story = {
+export const RevokeFailed: Story = {
   args: {
-    deleteError: "The controller could not remove this device.",
-    deleteOpen: true,
+    transitionError: "The controller could not revoke this device.",
+    transitionTarget: "revoked",
   },
 };
 
-export const Deleting: Story = {
-  args: { deleteOpen: true, deleting: true },
+export const Revoking: Story = {
+  args: { transitionTarget: "revoked", transitioning: true },
 };
 
 export const WithUsage: Story = {
@@ -164,7 +190,7 @@ export const Dark: Story = {
   globals: { colorMode: "dark" },
 };
 
-export const DarkDeleteFailed: Story = {
-  ...DeleteFailed,
+export const DarkRevokeFailed: Story = {
+  ...RevokeFailed,
   globals: { colorMode: "dark" },
 };

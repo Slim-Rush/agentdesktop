@@ -4,10 +4,32 @@
   "description": "Startup configuration for the Agentdesktop fleet controller.",
   "type": "object",
   "properties": {
+    "adminAuth": {
+      "description": "Authentication for admin write endpoints. Absent means write requests\nare refused until an operator configures it.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControllerAdminAuthConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "adminListen": {
       "description": "Loopback address on which the controller management UI listens.",
       "type": "string",
       "default": "127.0.0.1:8080"
+    },
+    "agentCatalog": {
+      "description": "Signed agent catalog served to enrolled devices.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControllerAgentCatalogConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "allowInsecureDev": {
       "description": "Permit a non-HTTPS OIDC issuer for isolated local development.\n\nThis escape hatch is only appropriate for isolated local development.",
@@ -29,6 +51,13 @@
       "description": "SQLite or PostgreSQL URL used for controller state.",
       "type": "string",
       "default": "sqlite://agentdesktop-controller.db?mode=rwc"
+    },
+    "devicePolicy": {
+      "description": "Per-user device enrollment limits.",
+      "$ref": "#/$defs/DevicePolicyConfig",
+      "default": {
+        "maxDevicesPerUser": 5
+      }
     },
     "fleetListen": {
       "description": "Address on which the device-facing gRPC fleet API listens.",
@@ -72,6 +101,61 @@
     "tls"
   ],
   "$defs": {
+    "CatalogPublicKey": {
+      "description": "A public key pinned by the daemon or the controller.",
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "Base64 raw 32-byte Ed25519 public key.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "keyId",
+        "publicKey"
+      ]
+    },
+    "ControllerAdminAuthConfig": {
+      "description": "Verified OIDC actors allowed to use admin write endpoints.",
+      "type": "object",
+      "properties": {
+        "allowedSubjects": {
+          "description": "OIDC subjects allowed to enqueue or cancel jobs. Empty refuses every\nwrite request (fail closed).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ControllerAgentCatalogConfig": {
+      "description": "Signed agent catalog served by the controller.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path to the signed catalog JSON file.",
+          "type": "string"
+        },
+        "publicKeys": {
+          "description": "Pinned Ed25519 public keys used to validate the file at load time.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CatalogPublicKey"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
     "ControllerDaemonConfig": {
       "description": "Controller-owned daemon configuration file and its revision.",
       "type": "object",
@@ -201,6 +285,20 @@
       "required": [
         "tokenFile"
       ]
+    },
+    "DevicePolicyConfig": {
+      "description": "Bounds the number of active devices one OIDC subject can enroll.",
+      "type": "object",
+      "properties": {
+        "maxDevicesPerUser": {
+          "description": "Maximum active devices per OIDC subject. Defaults to 5.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 5,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

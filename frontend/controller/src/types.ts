@@ -5,6 +5,8 @@ import type {
   UsageTotals,
 } from "@agentdesktop/ui";
 
+export type DeviceState = "active" | "retired" | "revoked";
+
 export type Device = {
   id: string;
   hostname: string;
@@ -15,6 +17,7 @@ export type Device = {
   last_seen_at: number | null;
   enrolled_by_issuer: string;
   enrolled_by_subject: string;
+  state: DeviceState;
   config_revision: number | null;
   config_state: number | null;
   config_error: string | null;
@@ -41,6 +44,10 @@ export type ProgramStatus = {
 };
 
 export type DeviceDetail = Device & {
+  retired_at: number | null;
+  superseded_by: string | null;
+  replaces_device_id: string | null;
+  active_devices_for_subject: number;
   programs: ProgramStatus[];
   programs_reported: boolean | null;
   discoveries: Array<{
@@ -94,6 +101,22 @@ export type ControllerSettings = {
   tls_enabled: boolean;
   gateway_jwt_enabled: boolean;
   usage_enabled: boolean;
+  max_devices_per_user: number;
+};
+
+export type AuditEvent = {
+  id: string;
+  actor: string;
+  action: string;
+  device_id: string;
+  subject: string;
+  payload: Record<string, unknown>;
+  created_at: number;
+};
+
+export type AuditPage = {
+  events: AuditEvent[];
+  nextCursor: string | null;
 };
 
 export type UsageRange = "24h" | "7d" | "30d" | "90d";

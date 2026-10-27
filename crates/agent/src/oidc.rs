@@ -284,9 +284,10 @@ pub async fn enroll(
     controller: &ControllerConnectionConfig,
     enrollment: &EnrollmentState,
     callback_listen: Option<SocketAddr>,
+    previous_device_id: Option<String>,
 ) -> anyhow::Result<Identity> {
     if controller.device_authorization {
-        return enroll_with_device_authorization(controller, enrollment).await;
+        return enroll_with_device_authorization(controller, enrollment, previous_device_id).await;
     }
     let (verifier, challenge) = pkce();
     let mut client = remote::client(controller, None).await?;
@@ -296,6 +297,7 @@ pub async fn enroll(
             hostname: remote::hostname(),
             code_challenge: challenge,
             device_authorization: false,
+            previous_device_id: previous_device_id.unwrap_or_default(),
         })
         .await
         .context("begin OIDC enrollment")?
@@ -334,6 +336,7 @@ pub async fn enroll(
 async fn enroll_with_device_authorization(
     controller: &ControllerConnectionConfig,
     enrollment: &EnrollmentState,
+    previous_device_id: Option<String>,
 ) -> anyhow::Result<Identity> {
     let mut client = remote::client(controller, None).await?;
     let (device_key, csr) = device_csr()?;
@@ -342,6 +345,7 @@ async fn enroll_with_device_authorization(
             hostname: remote::hostname(),
             code_challenge: String::new(),
             device_authorization: true,
+            previous_device_id: previous_device_id.unwrap_or_default(),
         })
         .await
         .context("begin OIDC device authorization enrollment")?

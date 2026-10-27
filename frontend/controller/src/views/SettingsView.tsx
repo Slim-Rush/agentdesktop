@@ -64,6 +64,12 @@ export function SettingsView({
             description="Token and cost records from agentgateway"
             enabled={data.usage_enabled}
           />
+          <SettingRow
+            title="Device limit"
+            description="Active devices allowed per user"
+            enabled
+            value={String(data.max_devices_per_user)}
+          />
         </section>
       )}
       <section className="local-notice">
@@ -83,10 +89,12 @@ function SettingRow({
   title,
   description,
   enabled,
+  value,
 }: {
   title: string;
   description: string;
   enabled: boolean;
+  value?: string;
 }) {
   return (
     <div className="setting-row">
@@ -94,8 +102,8 @@ function SettingRow({
         <strong>{title}</strong>
         <span>{description}</span>
       </div>
-      <span className={`badge ${enabled ? "success" : "neutral"}`}>
-        {enabled ? "Enabled" : "Disabled"}
+      <span className={`badge ${value || enabled ? "success" : "neutral"}`}>
+        {value ?? (enabled ? "Enabled" : "Disabled")}
       </span>
     </div>
   );

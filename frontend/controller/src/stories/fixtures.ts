@@ -6,6 +6,7 @@ import {
 } from "@agentdesktop/ui";
 
 import type {
+  AuditPage,
   ControllerSettings,
   DaemonConfigDocument,
   Device,
@@ -26,6 +27,7 @@ export const macDevice: Device = {
   last_seen_at: now - 12,
   enrolled_by_issuer: "https://issuer.example",
   enrolled_by_subject: "developer@example.com",
+  state: "active",
   config_revision: 4,
   config_state: 1,
   config_error: null,
@@ -216,6 +218,10 @@ const deviceSkills = [
 
 export const deviceDetail: DeviceDetail = {
   ...macDevice,
+  retired_at: null,
+  superseded_by: null,
+  replaces_device_id: null,
+  active_devices_for_subject: 1,
   programs: [
     {
       program: "claude-code",
@@ -362,6 +368,42 @@ export const emptyDeviceDetail: DeviceDetail = {
   programs_reported: true,
 };
 
+export const retiredDeviceDetail: DeviceDetail = {
+  ...deviceDetail,
+  state: "retired",
+  retired_at: now - 3600,
+  superseded_by: "device-mac-12345678",
+  replaces_device_id: "device-mac-old-00000001",
+  active_devices_for_subject: 1,
+};
+
+export const deviceAudit: AuditPage = {
+  events: [
+    {
+      id: "audit-1",
+      actor: "device-enrollment",
+      action: "device.re_enrolled",
+      device_id: "device-mac-12345678",
+      subject: "developer@example.com",
+      payload: {
+        hostname: "dev-mac",
+        previousDeviceId: "device-mac-old-00000001",
+      },
+      created_at: now - 3600,
+    },
+    {
+      id: "audit-2",
+      actor: "device-enrollment",
+      action: "device.enrolled",
+      device_id: "device-mac-old-00000001",
+      subject: "developer@example.com",
+      payload: { hostname: "dev-mac", previousDeviceId: null },
+      created_at: now - 86400 * 30,
+    },
+  ],
+  nextCursor: null,
+};
+
 export const controllerSettings: ControllerSettings = {
   fleet_listen: "0.0.0.0:8080",
   admin_listen: "127.0.0.1:8081",
@@ -369,6 +411,7 @@ export const controllerSettings: ControllerSettings = {
   tls_enabled: true,
   gateway_jwt_enabled: true,
   usage_enabled: true,
+  max_devices_per_user: 5,
 };
 
 const day = 86400;

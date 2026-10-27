@@ -667,6 +667,109 @@ code {
   padding: 16px 17px 2px;
 }
 
+.device-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-select select {
+  min-height: 34px;
+  padding: 0 28px 0 9px;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.filter-select select:focus-visible {
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 2px var(--focus-shadow);
+  outline: none;
+}
+
+.device-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.device-lifecycle-summary {
+  padding: 12px 17px 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.device-muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.device-lifecycle > .device-muted {
+  margin: 0 17px 16px;
+  line-height: 1.5;
+}
+
+.device-lifecycle-actions {
+  padding: 0 17px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-lifecycle-actions .button,
+.device-lifecycle-actions .destructive-button {
+  gap: 6px;
+}
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-row {
+  padding: 9px 17px;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(90px, 0.7fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.audit-row:last-child {
+  border-bottom: 0;
+}
+
+.audit-action {
+  color: var(--ink);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-actor {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-row code {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-row time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.audit-list + .button {
+  margin: 12px 17px 16px;
+}
+
 .error-callout {
   margin: 0 17px 16px;
   padding: 10px;
@@ -1509,6 +1612,21 @@ code {
 
   .search-box {
     width: 100%;
+  }
+
+  .device-filters {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .filter-select select {
+    width: 100%;
+  }
+
+  .audit-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .usage-filter {

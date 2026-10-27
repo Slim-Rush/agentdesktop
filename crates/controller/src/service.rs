@@ -22,7 +22,7 @@ use agentdesktop_usage::UsageError;
 use crate::{
     catalog::CatalogStore,
     daemon_config::DaemonConfigStore,
-    database::{Database, DevicePrincipal},
+    database::{Database, DevicePrincipal, EnrollmentOutcome, EnrollmentRequest},
     device_ca::DeviceCertificateIssuer,
     gateway_jwt::GatewayJwtIssuer,
     jobs::JobState as LocalJobState,
@@ -38,6 +38,7 @@ pub struct FleetAgentService {
     device_certificate_issuer: Option<DeviceCertificateIssuer>,
     catalog: CatalogStore,
     usage_enabled: bool,
+    max_devices_per_user: u32,
 }
 
 impl FleetAgentService {
@@ -56,7 +57,14 @@ impl FleetAgentService {
             device_certificate_issuer,
             catalog: CatalogStore::empty(),
             usage_enabled: false,
+            max_devices_per_user: 5,
         }
+    }
+
+    /// Sets the per-user active-device limit enforced during enrollment.
+    pub fn with_device_policy(mut self, max_devices_per_user: u32) -> Self {
+        self.max_devices_per_user = max_devices_per_user;
+        self
     }
 
     pub fn with_catalog(mut self, catalog: CatalogStore) -> Self {
@@ -97,11 +105,18 @@ impl FleetAgent for FleetAgentService {
             .oidc
             .as_ref()
             .ok_or_else(|| Status::failed_precondition("OIDC enrollment is disabled"))?;
-        let request = request.into_inner();
-        let response = if request.device_authorization {
-            oidc.begin_device(request.hostname).await
+        let BeginEnrollmentRequest {
+            hostname,
+            code_challenge,
+            device_authorization,
+            previous_device_id,
+        } = request.into_inner();
+        let previous_device_id = (!previous_device_id.is_empty()).then_some(previous_device_id);
+        let response = if device_authorization {
+            oidc.begin_device(hostname, previous_device_id).await
         } else {
-            oidc.begin(request.hostname, &request.code_challenge).await
+            oidc.begin(hostname, &code_challenge, previous_device_id)
+                .await
         }
         .map_err(invalid_enrollment)?;
         Ok(Response::new(response))
@@ -128,6 +143,7 @@ impl FleetAgent for FleetAgentService {
             &completed.subject,
             Some(&completed.idp_claims),
             &csr_der,
+            completed.previous_device_id.as_deref(),
         )
         .await
     }
@@ -380,7 +396,22 @@ impl FleetAgent for FleetAgentService {
                 _ = auth_interval.tick() => {
                     let (oidc, access_token) = &oauth_revalidation;
                     match oidc.authenticate_access_token(access_token).await {
-                        Ok(principal) if oidc_principals_match(&principal, &enrolled_principal) => {}
+                        Ok(principal) if oidc_principals_match(&principal, &enrolled_principal) => {
+                            match database.device_state(&authenticated_device_id).await {
+                                Ok(Some(state)) if state == "active" => {}
+                                other => {
+                                    let message = match other {
+                                        Ok(Some(state)) if state == "revoked" => "device_revoked",
+                                        _ => "device_retired",
+                                    };
+                                    warn!(device_id = %authenticated_device_id, "closing stream for a device that is no longer active");
+                                    let _ = auth_sender
+                                        .send(Err(Status::permission_denied(message)))
+                                        .await;
+                                    break;
+                                }
+                            }
+                        }
                         Ok(_) => {
                             warn!(device_id = %authenticated_device_id, "closing stream after OIDC principal changed");
                             let _ = auth_sender
@@ -481,6 +512,14 @@ impl FleetAgentService {
                 "access token principal does not match enrolled device user",
             ));
         }
+        match principal.state.as_str() {
+            "active" => {}
+            "revoked" => return Err(Status::permission_denied("device_revoked")),
+            "retired" => return Err(Status::permission_denied("device_retired")),
+            // An unknown state must not authenticate: new terminal states do
+            // not silently become active.
+            _ => return Err(Status::permission_denied("device_retired")),
+        }
         Ok(device_id.to_owned())
     }
 
@@ -491,6 +530,7 @@ impl FleetAgentService {
         enrolled_by_subject: &str,
         idp_claims: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
         csr_der: &[u8],
+        previous_device_id: Option<&str>,
     ) -> Result<Response<EnrollResponse>, Status> {
         let device_id = Uuid::new_v4().to_string();
         let issued_certificate = self
@@ -499,21 +539,40 @@ impl FleetAgentService {
             .ok_or_else(|| Status::failed_precondition("device certificate issuance is disabled"))?
             .issue(&device_id, csr_der)
             .map_err(invalid_csr)?;
-        self.database
-            .enroll_device(
-                &device_id,
+        let outcome = self
+            .database
+            .enroll_device_with_policy(EnrollmentRequest {
+                device_id: &device_id,
                 hostname,
-                enrolled_by_issuer,
-                enrolled_by_subject,
+                issuer: enrolled_by_issuer,
+                subject: enrolled_by_subject,
                 idp_claims,
-            )
+                previous_device_id,
+                max_devices_per_user: self.max_devices_per_user,
+                actor: "device-enrollment",
+            })
             .await
             .map_err(internal)?;
+        let linked = match outcome {
+            EnrollmentOutcome::Enrolled { linked } => linked,
+            EnrollmentOutcome::LimitReached => {
+                warn!(
+                    device_id,
+                    hostname,
+                    enrolled_by_issuer,
+                    enrolled_by_subject,
+                    "rejected device enrollment at the per-user limit"
+                );
+                return Err(Status::resource_exhausted("device_limit_reached"));
+            }
+        };
         info!(
             %device_id,
             hostname,
             enrolled_by_issuer,
             enrolled_by_subject,
+            previous_device_id = previous_device_id.unwrap_or(""),
+            linked,
             "enrolled device"
         );
 
@@ -871,6 +930,59 @@ mod tests {
             .await
             .expect_err("empty enrolled issuer must fail closed");
         assert_eq!(status.code(), Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn retired_and_revoked_devices_are_denied_fleet_authentication() {
+        let device_id = "7ca03414-bb20-4c80-98ef-7b0538b988ba";
+        let path = std::env::temp_dir().join(format!(
+            "agentdesktop-lifecycle-auth-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let database = Database::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+            .await
+            .expect("connect database");
+        database
+            .enroll_device(device_id, "host", "issuer", "subject", None)
+            .await
+            .expect("enroll device");
+        let service = FleetAgentService::new(
+            None,
+            database.clone(),
+            DaemonConfigStore::new(None),
+            None,
+            None,
+        );
+        let principal = OidcPrincipal {
+            issuer: "issuer".to_owned(),
+            subject: "subject".to_owned(),
+        };
+
+        database
+            .set_device_state(device_id, crate::database::DeviceState::Retired, "test")
+            .await
+            .unwrap();
+        let status = service
+            .authenticate_device_certificate_identity(device_id, &principal)
+            .await
+            .expect_err("retired device must be denied");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert_eq!(status.message(), "device_retired");
+
+        database
+            .set_device_state(device_id, crate::database::DeviceState::Revoked, "test")
+            .await
+            .unwrap();
+        let status = service
+            .authenticate_device_certificate_identity(device_id, &principal)
+            .await
+            .expect_err("revoked device must be denied");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert_eq!(status.message(), "device_revoked");
+
+        drop(database);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

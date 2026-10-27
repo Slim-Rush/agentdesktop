@@ -15,6 +15,7 @@ graph TB
         JobExec["Job executor<br/>(crates/agent/jobs)"]:::target
         Installer["macOS user-level installer<br/>(no sudo)"]:::target
         Receipts["Install receipts<br/>(managed paths)"]:::target
+        LimitState["Enrollment limit terminal state<br/>(deviceLimitReached)"]:::target
         Tools["Managed developer tools<br/>Claude Code, Claude Desktop, Codex,<br/>OpenCode, Grok, Copilot, VS Code"]
         DiscoveryOnly["Discovery-only tools<br/>Cursor, Ollama"]
         State["Local state<br/>config, identity, usage, receipts"]
@@ -25,7 +26,11 @@ graph TB
         Admin["Admin HTTP API<br/>/api/v1/*"]
         Catalog["Agent catalog<br/>(signed manifest)"]:::target
         Jobs["Job dispatcher<br/>(agent_jobs)"]:::target
-        DB[("SQLite / PostgreSQL<br/>devices, catalog state, jobs,<br/>discoveries, usage")]
+        Lifecycle["Device lifecycle<br/>(active/retired/revoked)"]:::target
+        AuditStore["Audit events<br/>(subject, lineage)"]:::target
+        AdminAuthz["Admin write authorization<br/>(Bearer or loopback CSRF<br/>+ Host allowlist)"]:::target
+        EnrollBounds["Enrollment input bounds<br/>(previous ID, hostname)"]:::target
+        DB[("SQLite / PostgreSQL<br/>devices, catalog state, jobs,<br/>discoveries, usage, audit")]
         CA["Device CA"]
         JWTSigner["Gateway JWT issuer<br/>JWKS"]
         UsageIngest["Usage ingest<br/>OTLP logs"]
@@ -61,6 +66,7 @@ graph TB
     Daemon -.-> CatalogCache
     Daemon -.-> LocalConfig
     Daemon -.-> JobExec
+    Daemon -.->|"terminal limit state"| LimitState
     JobExec -.-> Installer
     Installer -.->|"install/uninstall"| Tools
     Installer -.-> Receipts
@@ -69,8 +75,15 @@ graph TB
     Fleet --> DB
     Fleet --> CA
     Fleet --> JWTSigner
+    Fleet -.->|"link + per-user limit"| Lifecycle
+    Fleet -.->|"previousDeviceId"| EnrollBounds
+    EnrollBounds -.-> Lifecycle
+    Lifecycle --> DB
+    Lifecycle -.-> AuditStore
+    AuditStore --> DB
     Fleet -->|"daemon config push<br/>stream"| Daemon
     Daemon -->|"inventory, config status,<br/>telemetry, usage"| Fleet
+    Daemon -.->|"previousDeviceId"| Fleet
 
     Fleet -.->|"catalog + jobs"| Daemon
     Daemon -.->|"agent state, job status"| Fleet
@@ -89,8 +102,13 @@ graph TB
     UsageIngest --> DB
 
     AdminUser --> AdminUI
-    AdminUI -->|"HTTP JSON /api/v1/*"| Admin
+    AdminUI -->|"HTTP JSON /api/v1/*<br/>devices, lifecycle, audit"| Admin
+    Admin -->|"writes"| AdminAuthz
+    AdminAuthz --> Lifecycle
+    AdminAuthz --> Jobs
     Admin --> JWTSigner
+    Admin --> Lifecycle
+    Admin --> AuditStore
 
     classDef external fill:#eee,stroke:#999;
     classDef target fill:#fff3cd,stroke:#b8860b,stroke-dasharray: 5 5;

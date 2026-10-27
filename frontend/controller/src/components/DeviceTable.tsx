@@ -3,7 +3,7 @@ import { Check, ChevronRight, CircleAlert } from "lucide-react";
 
 import { friendlyOs } from "../format";
 import { navigate } from "../router";
-import type { Device } from "../types";
+import type { Device, DeviceState } from "../types";
 import { EmptyDevices } from "./ViewStates";
 
 export function DeviceTable({
@@ -25,6 +25,7 @@ export function DeviceTable({
           <tr>
             <th>Device</th>
             <th>Status</th>
+            <th>Lifecycle</th>
             <th>Platform</th>
             {!compact && <th>Agent</th>}
             <th>Tools</th>
@@ -52,6 +53,9 @@ export function DeviceTable({
               </td>
               <td>
                 <OnlineBadge timestamp={device.last_seen_at} />
+              </td>
+              <td>
+                <DeviceStateBadge state={device.state} />
               </td>
               <td>
                 <div className="cell-stack">
@@ -112,6 +116,20 @@ export function OnlineBadge({ timestamp }: { timestamp: number | null }) {
       <span className="mini-dot" />
       {online ? "Online" : "Offline"}
     </span>
+  );
+}
+
+const deviceStateLabels: Record<DeviceState, string> = {
+  active: "Active",
+  retired: "Retired",
+  revoked: "Revoked",
+};
+
+export function DeviceStateBadge({ state }: { state: DeviceState }) {
+  const tone =
+    state === "active" ? "success" : state === "retired" ? "warning" : "danger";
+  return (
+    <span className={`badge ${tone}`}>{deviceStateLabels[state] ?? state}</span>
   );
 }
 

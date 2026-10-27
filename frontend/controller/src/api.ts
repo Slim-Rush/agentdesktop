@@ -1,6 +1,20 @@
 import { useEffect, useState } from "react";
 
+export const ADMIN_WRITE_HEADER = "x-agentdesktop-admin";
+
+/**
+ * Sends a mutating admin request. The controller accepts this CSRF marker on
+ * its loopback listener when `adminAuth` is not configured; configured
+ * deployments still require an injected bearer token.
+ */
+export function adminWrite(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set(ADMIN_WRITE_HEADER, "1");
+  return fetch(path, { ...init, headers });
+}
+
 export function useApi<T>(path: string) {
+  const [revision, setRevision] = useState(0);
   const [query, setQuery] = useState<{
     path: string;
     data: T | null;
@@ -8,6 +22,7 @@ export function useApi<T>(path: string) {
     loading: boolean;
   }>({ path, data: null, error: null, loading: true });
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit reload trigger for this request.
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -36,9 +51,14 @@ export function useApi<T>(path: string) {
       active = false;
       controller.abort();
     };
-  }, [path]);
+  }, [path, revision]);
 
-  return query.path === path
-    ? query
-    : { path, data: null, error: null, loading: true };
+  const current =
+    query.path === path
+      ? query
+      : { path, data: null, error: null, loading: true };
+  return {
+    ...current,
+    reload: () => setRevision((value) => value + 1),
+  };
 }
