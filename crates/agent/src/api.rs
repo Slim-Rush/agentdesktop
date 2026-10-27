@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use agentdesktop_core::{
-    catalog::CatalogPublicKey,
+    catalog::{CatalogEntry, CatalogPublicKey},
     config::{
         ControllerConnectionConfig, DaemonConfig, LlmGatewayAuthentication, ProgramAuthentication,
         VsCodeCopilotChat, valid_client_id,
@@ -383,25 +383,34 @@ async fn agents(State(state): State<AppState>) -> Result<Json<Value>, (StatusCod
         .entries
         .iter()
         .map(|entry| {
-            json!({
-                "id": entry.id,
-                "displayName": entry.display_name,
-                "programKey": entry.program_key,
-                "platforms": entry.platforms,
-                "architectures": entry.architectures,
-                "configured": local
+            agent_json(
+                entry,
+                local
                     .current()
                     .programs
                     .get(&entry.program_key)
                     .cloned()
                     .unwrap_or(Value::Null),
-            })
+            )
         })
         .collect::<Vec<_>>();
     Ok(Json(json!({
         "revision": snapshot.catalog.revision,
         "agents": agents,
     })))
+}
+
+fn agent_json(entry: &CatalogEntry, configured: Value) -> Value {
+    json!({
+        "id": entry.id,
+        "displayName": entry.display_name,
+        "programKey": entry.program_key,
+        "platforms": entry.platforms,
+        "architectures": entry.architectures,
+        "versions": entry.versions,
+        "detection": entry.detection,
+        "configured": configured,
+    })
 }
 
 async fn agent_config(
@@ -1196,11 +1205,42 @@ fn program_uses_subscription(config: &DaemonConfig, client_id: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use agentdesktop_core::config::parse_daemon;
+    use agentdesktop_core::{
+        catalog::{CatalogEntry, CatalogVersion, DetectionRule, InstallKind},
+        config::parse_daemon,
+    };
+    use serde_json::Value;
 
     use super::{
-        ProgramControl, load_effective_config, program_uses_subscription, unmetered_tools,
+        ProgramControl, agent_json, load_effective_config, program_uses_subscription,
+        unmetered_tools,
     };
+
+    #[test]
+    fn agent_summary_includes_versions_for_install_actions() {
+        let entry = CatalogEntry {
+            id: "claude-code".to_owned(),
+            display_name: "Claude Code".to_owned(),
+            program_key: "claudeCode".to_owned(),
+            platforms: vec!["macos".to_owned()],
+            architectures: vec!["aarch64".to_owned()],
+            install_kind: InstallKind::User,
+            versions: vec![CatalogVersion {
+                version: "1.2.0".to_owned(),
+                artifact_url: "https://example.com/claude-code.tar.gz".to_owned(),
+                sha256: "a".repeat(64),
+                signature: "c2ln".to_owned(),
+            }],
+            detection: DetectionRule {
+                paths: vec!["~/.local/bin/claude".to_owned()],
+            },
+        };
+
+        let summary = agent_json(&entry, Value::Null);
+
+        assert_eq!(summary["versions"][0]["version"], "1.2.0");
+        assert_eq!(summary["detection"]["paths"][0], "~/.local/bin/claude");
+    }
 
     #[test]
     fn vscode_on_github_models_is_reported_as_unmetered() {

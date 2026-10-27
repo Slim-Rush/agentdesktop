@@ -1,0 +1,20 @@
+schema_version: 1
+id: HOTFIX-2026102749ba2f969f19
+title: Desktop agents API contract and app runtime recovery
+spec_path: docs/specs/HOTFIX-2026102749ba2f969f19.md
+status: verifying
+tasks:
+- id: task-49ee4e0956
+  title: Fix /v1/agents versions and detection contract
+  completed: true
+- id: task-f0302c3eae
+  title: Fix Agents page empty/error states and safe version access
+  completed: true
+- id: task-6e5a90af68
+  title: Fix Assistant action button styling
+  completed: true
+- id: task-7c6d565292
+  title: Fix daemon fallback health check and macOS window reopen
+  completed: true
+created_at: '2026-10-27T01:45:33+00:00'
+updated_at: '2026-10-27T01:48:56+00:00'

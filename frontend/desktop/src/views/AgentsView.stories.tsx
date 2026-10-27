@@ -132,6 +132,23 @@ export const Empty: Story = {
   args: { agents: [], discovery: { agents: [] } },
 };
 
+export const CatalogMissing: Story = {
+  args: {
+    agents: null,
+    discovery: { agents: [] },
+    error: "daemon returned 404 Not Found: agent catalog has not been synced",
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText("No signed catalog yet")).toBeVisible();
+    await expect(
+      canvas.getAllByRole("button", { name: "Sync catalog" }),
+    ).toHaveLength(2);
+    await expect(
+      canvas.queryByText(/daemon returned 404/),
+    ).not.toBeInTheDocument();
+  },
+};
+
 export const Loading: Story = {
   args: { agents: null, loading: true },
 };
@@ -224,6 +241,22 @@ export const FailedJob: Story = {
   play: async ({ args, canvas }) => {
     await userEvent.click(canvas.getByRole("button", { name: "Diagnose" }));
     await expect(args.onDiagnose).toHaveBeenCalledWith("job-2");
+  },
+};
+
+export const MissingVersions: Story = {
+  args: {
+    agents: [{ ...agents[0], versions: [] }],
+    discovery: { agents: [] },
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText("Claude Code")).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "Install" }),
+    ).toBeDisabled();
+    await expect(
+      canvas.getByRole("button", { name: "Uninstall" }),
+    ).toBeDisabled();
   },
 };
 

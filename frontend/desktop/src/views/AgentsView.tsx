@@ -4,8 +4,10 @@ import {
   CheckCircle2,
   Download,
   LoaderCircle,
+  Package,
   RefreshCw,
   Settings2,
+  ShieldCheck,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -103,7 +105,7 @@ function stateFor(
   );
   const installed = Boolean(found);
   const managed = agent.configured !== null && agent.configured !== undefined;
-  const latest = agent.versions[0]?.version ?? null;
+  const latest = (agent.versions ?? [])[0]?.version ?? null;
   const installedVersion = found?.version ?? null;
   const supported =
     agent.platforms.includes(platform) &&
@@ -311,7 +313,7 @@ export function AgentsView({
   }
 
   async function askUninstall(agent: AgentSummary) {
-    const version = agent.versions[0]?.version;
+    const version = (agent.versions ?? [])[0]?.version;
     if (!version) return;
     setActionError(null);
     try {
@@ -326,43 +328,71 @@ export function AgentsView({
     }
   }
 
+  const catalogMissing =
+    error?.toLowerCase().includes("agent catalog has not been synced") ?? false;
+  const shownError = error && !catalogMissing ? error : null;
+
   return (
-    <div className="page-stack">
-      <div className="page-heading">
+    <div className="page-stack agents-page">
+      <header className="agents-heading">
         <div>
-          <h2>Managed agents</h2>
+          <p className="eyebrow">Device catalog</p>
+          <h2>Approved agents</h2>
           <p>
-            Install, update, and configure the coding agents approved in this
-            device's catalog.
+            Install and keep the coding agents approved for this device. Only
+            signed catalog entries can be managed here.
           </p>
         </div>
-        <div className="agent-actions">
-          <button type="button" onClick={onRefresh} disabled={loading}>
-            <RefreshCw size={16} /> Refresh
-          </button>
-          <button type="button" onClick={onRefreshCatalog}>
-            Sync catalog
-          </button>
-          <button type="button" onClick={onRefreshInventory}>
-            Refresh inventory
+        <div className="agents-heading-actions">
+          <button
+            className="button button-primary"
+            type="button"
+            onClick={onRefreshCatalog}
+          >
+            <ShieldCheck size={14} /> Sync catalog
           </button>
         </div>
-      </div>
+      </header>
 
-      <section className="card">
-        <CardHeader
-          title="Catalog sync"
-          description={
-            sync?.catalog
-              ? `Revision ${sync.catalog.revision} · last sync ${new Date(
-                  sync.catalog.lastSyncUnixSeconds * 1000,
-                ).toLocaleString()}${sync.catalog.stale ? " · stale" : ""}`
-              : "No catalog has been synced yet."
-          }
-        />
-        <p className="agent-muted">
-          Local configuration revision: {sync?.localConfigRevision ?? 0}
-        </p>
+      <section className="card agents-catalog" aria-labelledby="catalog-title">
+        <div className="agents-catalog-main">
+          <span
+            className={`agents-catalog-icon${sync?.catalog ? "" : " is-empty"}`}
+          >
+            <ShieldCheck size={16} />
+          </span>
+          <div>
+            <div className="agents-catalog-title">
+              <h3 id="catalog-title">Signed catalog</h3>
+              {sync?.catalog ? (
+                <span className="badge neutral">
+                  Revision {sync.catalog.revision}
+                </span>
+              ) : (
+                <span className="badge warning">Not synced</span>
+              )}
+              {sync?.catalog?.stale ? (
+                <span className="badge warning">Stale</span>
+              ) : null}
+            </div>
+            <p className="agent-muted">
+              {sync?.catalog
+                ? `Last synced ${new Date(
+                    sync.catalog.lastSyncUnixSeconds * 1000,
+                  ).toLocaleString()}`
+                : "No catalog has been synced yet."}
+              <span className="agents-separator">·</span>
+              Local config revision {sync?.localConfigRevision ?? 0}
+            </p>
+          </div>
+        </div>
+        <button
+          className="button button-secondary"
+          type="button"
+          onClick={onRefreshInventory}
+        >
+          <RefreshCw size={14} /> Refresh inventory
+        </button>
       </section>
 
       {activeJob || recentJobs.length ? (
@@ -401,9 +431,19 @@ export function AgentsView({
         </section>
       ) : null}
 
-      {error || actionError ? (
-        <div className="notice notice-error" role="alert">
-          <AlertCircle size={16} /> {redactPaths(error ?? actionError ?? "")}
+      {shownError || actionError ? (
+        <div className="notice notice-error agents-notice" role="alert">
+          <AlertCircle size={16} />
+          <span>{redactPaths(shownError ?? actionError ?? "")}</span>
+          {shownError ? (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={onRefresh}
+            >
+              Retry
+            </button>
+          ) : null}
         </div>
       ) : notice ? (
         <div className={`notice notice-${notice.tone}`} role="status">
@@ -418,14 +458,18 @@ export function AgentsView({
         </div>
       ) : null}
 
-      <section className="card table-card">
+      <section className="card agents-card">
         <CardHeader
           title="Approved agents"
           description={
-            agents ? `${agents.length} catalog entries` : "Loading catalog…"
+            agents
+              ? `${agents.length} ${agents.length === 1 ? "agent" : "agents"} available on this device`
+              : catalogMissing
+                ? "No signed catalog has been synced yet."
+                : "Loading catalog…"
           }
         />
-        {loading && !agents ? (
+        {loading && !agents && !catalogMissing ? (
           <div className="empty-inline">
             <LoaderCircle size={20} className="spin" />
             <div>
@@ -442,16 +486,21 @@ export function AgentsView({
                 normalizedPlatform,
                 architecture,
               );
-              const latest = agent.versions[0]?.version ?? "";
+              const latest = (agent.versions ?? [])[0]?.version ?? "";
               const busy = busyAgent === agent.id || Boolean(activeJob);
               return (
                 <article key={agent.id} className="agent-row">
                   <div className="agent-row-main">
-                    <div>
-                      <h3>{agent.displayName}</h3>
-                      <p className="agent-muted">
-                        {agent.id} · {agent.programKey}
-                      </p>
+                    <div className="agent-identity">
+                      <span className="agent-icon">
+                        <Package size={16} />
+                      </span>
+                      <div>
+                        <h3>{agent.displayName}</h3>
+                        <p className="agent-muted">
+                          {agent.id} · {agent.programKey}
+                        </p>
+                      </div>
                     </div>
                     <span className={`agent-state agent-state-${state.tone}`}>
                       {state.tone === "success" ? (
@@ -462,54 +511,93 @@ export function AgentsView({
                   </div>
                   <div className="agent-row-actions">
                     {!state.supported ? (
-                      <button type="button" disabled>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        disabled
+                      >
                         Unsupported
                       </button>
                     ) : state.update ? (
                       <button
+                        className="button button-primary"
                         type="button"
                         disabled={busy}
                         onClick={() => onStartJob(agent.id, "update", latest)}
                       >
-                        <Upload size={16} /> Update
+                        <Upload size={15} /> Update
                       </button>
                     ) : !state.installed ? (
                       <button
+                        className="button button-primary"
                         type="button"
-                        disabled={busy}
+                        disabled={busy || !latest}
+                        title={
+                          latest
+                            ? undefined
+                            : "No installable version in the catalog"
+                        }
                         onClick={() => onStartJob(agent.id, "install", latest)}
                       >
-                        <Download size={16} /> Install
-                      </button>
-                    ) : null}
-                    {state.managed ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void askUninstall(agent)}
-                      >
-                        <Trash2 size={16} /> Uninstall
+                        <Download size={15} /> Install
                       </button>
                     ) : null}
                     <button
+                      className="button button-secondary"
                       type="button"
                       disabled={configBusy}
                       onClick={() => void openConfig(agent)}
                     >
-                      <Settings2 size={16} /> Configure
+                      <Settings2 size={15} /> Configure
                     </button>
+                    {state.managed ? (
+                      <button
+                        className="button button-ghost-danger"
+                        type="button"
+                        disabled={busy || !latest}
+                        title={
+                          latest
+                            ? undefined
+                            : "No removable version in the catalog"
+                        }
+                        onClick={() => void askUninstall(agent)}
+                      >
+                        <Trash2 size={15} /> Uninstall
+                      </button>
+                    ) : null}
                   </div>
                 </article>
               );
             })}
           </div>
         ) : (
-          <div className="empty-inline">
-            <AlertCircle size={20} />
+          <div className="agents-empty">
+            <span className="agents-empty-icon">
+              {catalogMissing ? (
+                <ShieldCheck size={18} />
+              ) : (
+                <AlertCircle size={18} />
+              )}
+            </span>
             <div>
-              <strong>No catalog entries</strong>
-              <span>Sync the catalog or check the daemon connection.</span>
+              <strong>
+                {catalogMissing
+                  ? "No signed catalog yet"
+                  : "No approved agents"}
+              </strong>
+              <span>
+                {catalogMissing
+                  ? "Sync the catalog to load the agents approved for this device."
+                  : "This catalog does not list any agents for this platform."}
+              </span>
             </div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={onRefreshCatalog}
+            >
+              <ShieldCheck size={15} /> Sync catalog
+            </button>
           </div>
         )}
       </section>
@@ -520,7 +608,11 @@ export function AgentsView({
             title={`Configure ${configAgent.displayName}`}
             description={`Local configuration revision ${configRevision}. Secret-bearing keys are rejected by the daemon.`}
             action={
-              <button type="button" onClick={() => setConfigAgent(null)}>
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => setConfigAgent(null)}
+              >
                 Close
               </button>
             }
@@ -541,6 +633,7 @@ export function AgentsView({
             </p>
           ) : null}
           <button
+            className="button button-primary"
             type="button"
             disabled={configBusy}
             onClick={() => void saveConfigNow()}
@@ -574,15 +667,19 @@ export function AgentsView({
               ))}
             </ul>
             <div className="agent-modal-actions">
-              <button type="button" onClick={() => setUninstall(null)}>
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => setUninstall(null)}
+              >
                 Cancel
               </button>
               <button
                 ref={confirmRef}
                 type="button"
-                className="danger"
+                className="button button-danger"
                 onClick={() => {
-                  const version = uninstall.agent.versions[0]?.version;
+                  const version = (uninstall.agent.versions ?? [])[0]?.version;
                   if (version)
                     onStartJob(uninstall.agent.id, "uninstall", version);
                   setUninstall(null);
