@@ -182,13 +182,15 @@ export function AssistantView({
         </div>
         <div className="agent-actions">
           <button
+            className="button button-secondary"
             type="button"
             onClick={() => onRefreshContext()}
             disabled={contextLoading}
           >
-            <RefreshCw size={16} /> Refresh context
+            <RefreshCw size={14} /> Refresh context
           </button>
           <button
+            className="button button-secondary"
             type="button"
             onClick={onClear}
             disabled={!messages.length && !error}
@@ -452,6 +454,7 @@ export function AssistantView({
             </p>
             <div className="agent-modal-actions">
               <button
+                className="button button-secondary"
                 type="button"
                 onClick={onCancelAction}
                 disabled={actionBusy}

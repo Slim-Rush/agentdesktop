@@ -49,6 +49,7 @@ export function Desktop() {
         onNavigate={navigate}
         onRefresh={() => {
           model.refresh();
+          if (model.view === "agents") agents.load();
           if (showingUsage) deviceUsage.reload();
         }}
         pageTitle={model.pageTitle}

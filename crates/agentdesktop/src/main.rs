@@ -367,8 +367,16 @@ async fn ensure_desktop_daemon() -> anyhow::Result<()> {
 
     let paths = user_daemon_paths()?;
     if Path::new(SYSTEM_LAUNCH_DAEMON_PATH).exists() {
-        remove_user_launch_agent(&paths).await;
-        return Ok(());
+        // A system LaunchDaemon can be installed but unhealthy, for example
+        // when launchd starts it without HOME. Check the system endpoint
+        // itself; a healthy user daemon must not suppress the fallback.
+        if client::get::<Health>(Path::new(DEFAULT_SOCKET_PATH), "/v1/health")
+            .await
+            .is_ok()
+        {
+            remove_user_launch_agent(&paths).await;
+            return Ok(());
+        }
     }
     if client::get::<Health>(&socket_path(), "/v1/health")
         .await
@@ -1119,7 +1127,7 @@ async fn execute_chat_action(
 }
 
 fn run_desktop() -> anyhow::Result<()> {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main_window(app);
         }))
@@ -1219,7 +1227,15 @@ fn run_desktop() -> anyhow::Result<()> {
             cancel_chat,
             execute_chat_action
         ])
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?;
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_main_window(app_handle);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
     Ok(())
 }
 

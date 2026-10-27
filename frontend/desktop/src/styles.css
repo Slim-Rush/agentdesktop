@@ -1581,3 +1581,251 @@ p {
     width: 100%;
   }
 }
+
+/* Agents page: catalog provenance + agent lifecycle */
+.agents-heading {
+  min-height: 54px;
+  padding-right: 45px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.agents-heading .eyebrow {
+  margin: 0;
+}
+
+.agents-heading h2 {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.agents-heading p:not(.eyebrow) {
+  max-width: 560px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agents-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agents-catalog {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agents-catalog-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agents-catalog-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+}
+
+.agents-catalog-icon.is-empty {
+  color: var(--warning-strong);
+  background: var(--warning-soft);
+}
+
+.agents-catalog-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agents-catalog-title h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agents-catalog-main p {
+  margin: 4px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.agents-separator {
+  margin: 0 6px;
+  color: var(--border);
+}
+
+.agents-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agents-notice > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agents-notice .button {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.agent-list {
+  gap: 0;
+  background: transparent;
+}
+
+.agent-row {
+  gap: 10px;
+  padding: 18px 20px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.agent-row:first-child {
+  border-top: 0;
+}
+
+.agent-row-main {
+  align-items: center;
+}
+
+.agent-identity {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.agent-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--foreground-muted);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+}
+
+.agent-row-main h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.agent-row-actions {
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.agent-state {
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.button-ghost-danger {
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.button-ghost-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+}
+
+.agents-empty {
+  padding: 28px 20px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.agents-empty-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--foreground-muted);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+.agents-empty > div {
+  min-width: 200px;
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+
+.agents-empty strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.agents-empty > div span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .agents-heading {
+    padding-right: 0;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .agents-heading-actions {
+    justify-content: flex-start;
+  }
+
+  .agents-catalog {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agents-catalog > .button,
+  .agents-empty > .button {
+    width: 100%;
+  }
+
+  .agents-empty > .button {
+    margin-left: 0;
+  }
+
+  .agent-row-main {
+    align-items: flex-start;
+  }
+
+  .agent-row-actions {
+    justify-content: flex-start;
+  }
+}
