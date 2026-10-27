@@ -62,3 +62,27 @@
 - [x] Implement playbooks and confirmed actions
 - [x] Add audit and automated assistant tests
 - [x] Update target architecture diagram
+
+### [STORY-20261026c0268fd1f364] Device identity lifecycle, per-user limits, and audit continuity
+> Spec: docs/specs/STORY-20261026c0268fd1f364.md
+
+- [x] Add device lifecycle migration and policy config
+- [x] Implement re-enrollment lineage and per-user device limit
+- [x] Enforce lifecycle state in device authentication
+- [x] Add audit events and read APIs
+- [x] Add admin lifecycle and history UI
+- [x] Add migration, concurrency, and UI tests
+- [x] Update target architecture diagram
+
+### [STORY-2026102757b539fe89bc] Device identity lifecycle QA remediation
+> Spec: docs/specs/STORY-2026102757b539fe89bc.md
+
+- [x] Add loopback admin write authorization and CSRF header
+- [x] Send admin write header from controller UI
+- [x] Bound enrollment previous ID and hostname
+- [x] Fix rejection audit attribution and fail-closed link reasons
+- [x] Make lifecycle transitions concurrency-safe
+- [x] Separate audit load-more error state in UI
+- [x] Add daemon device-limit terminal state
+- [x] Add remediation tests and stories
+- [x] Update target architecture diagram

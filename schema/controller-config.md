@@ -2,12 +2,21 @@
 
 |Field|Type|Description|
 |-|-|-|
+|`adminAuth`|object|Authentication for admin write endpoints. Absent means write requests<br>are refused until an operator configures it.|
+|`adminAuth.allowedSubjects`|[]string|OIDC subjects allowed to enqueue or cancel jobs. Empty refuses every<br>write request (fail closed).|
 |`adminListen`|string|Loopback address on which the controller management UI listens.|
+|`agentCatalog`|object|Signed agent catalog served to enrolled devices.|
+|`agentCatalog.path`|string|Path to the signed catalog JSON file.|
+|`agentCatalog.publicKeys`|[]object|Pinned Ed25519 public keys used to validate the file at load time.|
+|`agentCatalog.publicKeys[].keyId`|string||
+|`agentCatalog.publicKeys[].publicKey`|string|Base64 raw 32-byte Ed25519 public key.|
 |`allowInsecureDev`|boolean|Permit a non-HTTPS OIDC issuer for isolated local development.<br><br>This escape hatch is only appropriate for isolated local development.|
 |`daemonConfig`|object|Daemon configuration distributed to enrolled devices.|
 |`daemonConfig.path`|string|Path to the watched YAML configuration distributed to enrolled devices.<br><br>Relative paths are resolved from the controller configuration directory.<br>Valid file changes are published to connected devices automatically.|
 |`daemonConfig.revision`|integer|Monotonically increasing revision assigned to the daemon configuration.|
 |`databaseUrl`|string|SQLite or PostgreSQL URL used for controller state.|
+|`devicePolicy`|object|Per-user device enrollment limits.|
+|`devicePolicy.maxDevicesPerUser`|integer|Maximum active devices per OIDC subject. Defaults to 5.|
 |`fleetListen`|string|Address on which the device-facing gRPC fleet API listens.|
 |`gatewayJwt`|object|LLM gateway JWT signing settings.|
 |`gatewayJwt.issuer`|string|Issuer claim placed in generated JWTs.|

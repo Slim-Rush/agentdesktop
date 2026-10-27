@@ -68,7 +68,8 @@ async fn main() -> anyhow::Result<()> {
             .as_ref()
             .map(|auth| auth.allowed_subjects.clone())
             .unwrap_or_default(),
-    );
+    )
+    .with_write_enforcement(config.admin_auth.is_some());
     let gateway_jwt_issuer = config
         .gateway_jwt
         .as_ref()
@@ -112,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
             tls_enabled: true,
             gateway_jwt_enabled: gateway_jwt_issuer.is_some(),
             usage_enabled: usage_ingest.is_some(),
+            max_devices_per_user: config.device_policy.max_devices_per_user,
         },
     );
     let ca_certificate =
@@ -134,7 +136,8 @@ async fn main() -> anyhow::Result<()> {
         Some(device_certificate_issuer),
     )
     .with_catalog(catalog)
-    .with_usage_collection(usage_ingest.is_some());
+    .with_usage_collection(usage_ingest.is_some())
+    .with_device_policy(config.device_policy.max_devices_per_user);
 
     let certificate = std::fs::read(&tls.certificate)
         .with_context(|| format!("read TLS certificate from {}", tls.certificate.display()))?;

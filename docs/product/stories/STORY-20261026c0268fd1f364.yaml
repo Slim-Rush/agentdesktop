@@ -1,0 +1,30 @@
+schema_version: 1
+id: STORY-20261026c0268fd1f364
+title: Device identity lifecycle, per-user limits, and audit continuity
+spec_path: docs/specs/STORY-20261026c0268fd1f364.md
+status: archived
+tasks:
+- id: task-feb6b51852
+  title: Add device lifecycle migration and policy config
+  completed: true
+- id: task-80c446b144
+  title: Implement re-enrollment lineage and per-user device limit
+  completed: true
+- id: task-3d31c87015
+  title: Enforce lifecycle state in device authentication
+  completed: true
+- id: task-62822bbd38
+  title: Add audit events and read APIs
+  completed: true
+- id: task-3d8b75e6db
+  title: Add admin lifecycle and history UI
+  completed: true
+- id: task-a61ab06696
+  title: Add migration, concurrency, and UI tests
+  completed: true
+- id: task-38f1ec2502
+  title: Update target architecture diagram
+  completed: true
+created_at: '2026-10-26T10:46:09+00:00'
+updated_at: '2026-10-27T08:05:00+00:00'
+archived_at: '2026-10-27T08:05:00+00:00'

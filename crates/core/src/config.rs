@@ -518,6 +518,26 @@ pub struct ControllerConfig {
     /// This escape hatch is only appropriate for isolated local development.
     #[serde(default)]
     pub allow_insecure_dev: bool,
+    /// Per-user device enrollment limits.
+    #[serde(default)]
+    pub device_policy: DevicePolicyConfig,
+}
+
+/// Bounds the number of active devices one OIDC subject can enroll.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct DevicePolicyConfig {
+    /// Maximum active devices per OIDC subject. Defaults to 5.
+    pub max_devices_per_user: u32,
+}
+
+impl Default for DevicePolicyConfig {
+    fn default() -> Self {
+        Self {
+            max_devices_per_user: 5,
+        }
+    }
 }
 
 /// OpenID Connect settings used for interactive device enrollment.
@@ -1319,6 +1339,11 @@ pub fn parse_controller(contents: &str) -> anyhow::Result<ControllerConfig> {
         if gateway.lifetime.is_zero() {
             anyhow::bail!("gatewayJwt.lifetime must be greater than zero");
         }
+    }
+    if config.device_policy.max_devices_per_user == 0
+        || config.device_policy.max_devices_per_user > 1000
+    {
+        anyhow::bail!("devicePolicy.maxDevicesPerUser must be between 1 and 1000");
     }
     Ok(config)
 }
@@ -2137,6 +2162,33 @@ oidc:
 "#,
         )
         .expect("explicit insecure development configuration");
+    }
+
+    #[test]
+    fn controller_device_policy_defaults_and_validates() {
+        let base = r#"
+tls: /etc/agentdesktop/tls
+oidc:
+  issuer: https://idp.example.com
+  clientId: agentdesktop
+"#;
+        let config = parse_controller(base).expect("default device policy");
+        assert_eq!(config.device_policy.max_devices_per_user, 5);
+
+        let explicit = parse_controller(&format!("{base}devicePolicy:\n  maxDevicesPerUser: 12\n"))
+            .expect("explicit device policy");
+        assert_eq!(explicit.device_policy.max_devices_per_user, 12);
+
+        for value in [0, 1001] {
+            let error = parse_controller(&format!(
+                "{base}devicePolicy:\n  maxDevicesPerUser: {value}\n"
+            ))
+            .expect_err("invalid device limit must fail");
+            assert!(
+                format!("{error:#}").contains("devicePolicy.maxDevicesPerUser"),
+                "unexpected error for {value}: {error:#}"
+            );
+        }
     }
 
     #[test]

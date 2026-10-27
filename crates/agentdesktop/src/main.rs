@@ -505,6 +505,13 @@ fn managed_snapshot(configured: bool, status: Option<&EnrollmentStatus>) -> Mana
         "enrolling" => ("issuing", None),
         "starting" => ("not-enrolled", None),
         "notConfigured" => ("not-configured", None),
+        "deviceLimitReached" => (
+            "rejected",
+            Some(
+                "This user has reached the device limit. Retire a device or ask an administrator, then try again."
+                    .to_owned(),
+            ),
+        ),
         "failed" => ("unavailable", Some("Device enrollment failed.".to_owned())),
         _ => (
             "unavailable",
@@ -1437,7 +1444,7 @@ mod enrollment_tests {
 
     use agentdesktop_core::model::EnrollmentStatus;
 
-    use super::open_enrollment_url;
+    use super::{managed_snapshot, open_enrollment_url};
 
     #[tokio::test]
     async fn waits_for_authorization_url_before_opening_browser() {
@@ -1467,6 +1474,23 @@ mod enrollment_tests {
 
         assert_eq!(status.status, "awaitingAuthentication");
         assert_eq!(opened, ["https://login.example/authorize"]);
+    }
+
+    #[test]
+    fn a_device_limit_terminal_state_is_reported_as_rejected() {
+        let status = EnrollmentStatus {
+            status: "deviceLimitReached".to_owned(),
+            authorization_url: None,
+            user_code: None,
+        };
+        let snapshot = managed_snapshot(true, Some(&status));
+        assert_eq!(snapshot.enrollment, "rejected");
+        assert!(
+            snapshot
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("device limit"))
+        );
     }
 }
 

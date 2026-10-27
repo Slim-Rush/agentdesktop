@@ -302,6 +302,10 @@ async fn run_session(
 ) -> anyhow::Result<Infallible> {
     let identity_path = state_dir.join("identity.json");
     loop {
+        // Read the previous device ID before an unreadable identity is
+        // discarded: it is the enrollment lineage the controller uses to
+        // retire the old row instead of counting a second device.
+        let previous_device_id = identity::load_device_id(&identity_path).ok().flatten();
         let stored = match identity::load(&identity_path) {
             Ok(stored) => stored,
             Err(error) if identity::is_unreadable(&error) => {
@@ -327,7 +331,14 @@ async fn run_session(
                     enrollment,
                     logout,
                     INITIAL_RETRY_DELAY,
-                    || oidc::enroll(controller, enrollment, oidc_callback_listen),
+                    || {
+                        oidc::enroll(
+                            controller,
+                            enrollment,
+                            oidc_callback_listen,
+                            previous_device_id.clone(),
+                        )
+                    },
                 )
                 .await;
                 identity::save(&identity_path, &identity)?;
@@ -522,6 +533,19 @@ where
         };
         match result {
             Ok(identity) => return identity,
+            Err(error) if is_device_limit_reached(&error) => {
+                enrollment.set("deviceLimitReached").await;
+                warn!(
+                    controller,
+                    error = %format!("{error:#}"),
+                    "device limit reached; waiting for logout or an explicit retry"
+                );
+                match logout.recv().await {
+                    Some(request) => complete_unenrolled_logout(request, enrollment).await,
+                    None => std::future::pending::<()>().await,
+                }
+                continue;
+            }
             Err(error) => {
                 enrollment.set("starting").await;
                 warn!(
@@ -579,6 +603,16 @@ fn is_unauthenticated(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<tonic::Status>()
         .is_some_and(|status| status.code() == tonic::Code::Unauthenticated)
+}
+
+fn is_device_limit_reached(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<tonic::Status>())
+        .any(|status| {
+            status.code() == tonic::Code::ResourceExhausted
+                && status.message() == "device_limit_reached"
+        })
 }
 
 fn is_oauth_refresh_rejected(error: &anyhow::Error) -> bool {
@@ -1706,9 +1740,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        ControllerConnectionState, MAX_RETRY_DELAY, enroll_with_retry, is_oauth_refresh_rejected,
-        is_transient_refresh_failure, is_unauthenticated, next_inventory, next_retry_delay,
-        normalize_hostname,
+        ControllerConnectionState, MAX_RETRY_DELAY, enroll_with_retry, is_device_limit_reached,
+        is_oauth_refresh_rejected, is_transient_refresh_failure, is_unauthenticated,
+        next_inventory, next_retry_delay, normalize_hostname,
     };
     use crate::enrollment::EnrollmentState;
     use agentdesktop_core::model::{ControllerConnectionError, Discovery as AgentDiscovery};
@@ -1879,6 +1913,67 @@ mod tests {
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert_eq!(identity, "identity");
+    }
+
+    #[test]
+    fn detects_a_device_limit_rejection_through_the_error_chain() {
+        let status = tonic::Status::resource_exhausted("device_limit_reached");
+        let error = anyhow::Error::from(status).context("complete OIDC enrollment");
+        assert!(is_device_limit_reached(&error));
+        assert!(!is_device_limit_reached(&anyhow::anyhow!(
+            "controller unavailable"
+        )));
+    }
+
+    #[tokio::test]
+    async fn device_limit_is_a_terminal_enrollment_state() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let task_attempts = attempts.clone();
+        let enrollment = EnrollmentState::new(true);
+        let state = enrollment.clone();
+        let (logout_sender, mut logout) = mpsc::channel(2);
+
+        let task = tokio::spawn(async move {
+            enroll_with_retry(
+                "https://controller.example",
+                &state,
+                &mut logout,
+                Duration::ZERO,
+                || {
+                    let attempts = task_attempts.clone();
+                    async move {
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            Err(anyhow::Error::from(tonic::Status::resource_exhausted(
+                                "device_limit_reached",
+                            )))
+                        } else {
+                            Ok("identity")
+                        }
+                    }
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(enrollment.get().await.status, "deviceLimitReached");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a limit rejection must not retry with backoff"
+        );
+
+        let (completion, _result) = tokio::sync::oneshot::channel();
+        logout_sender
+            .send(super::LogoutRequest { completion })
+            .await
+            .expect("send logout");
+        let identity = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("terminal state must resume on logout")
+            .expect("enrollment task");
+        assert_eq!(identity, "identity");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

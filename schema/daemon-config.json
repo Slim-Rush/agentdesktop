@@ -4,6 +4,21 @@
   "description": "Configuration for an Agentdesktop daemon.",
   "type": "object",
   "properties": {
+    "agentCatalog": {
+      "description": "Signed agent catalog and local-configuration mode.\n\nOmit for the pre-catalog behavior. A BYOD device sets `configMode: local`\nand pins one or more catalog public keys here.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentCatalogConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "configMode": {
+      "description": "How per-agent configuration is chosen. Defaults to `managed` so existing\ncontroller-managed deployments keep their current behavior.",
+      "$ref": "#/$defs/ConfigMode"
+    },
     "controller": {
       "description": "Controller connection settings. Omit this field to run without fleet management.",
       "anyOf": [
@@ -68,6 +83,44 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "AgentCatalogConfig": {
+      "description": "Daemon-side catalog settings: pinned keys and the sync cadence.",
+      "type": "object",
+      "properties": {
+        "publicKeys": {
+          "description": "Pinned Ed25519 public keys. A key id not in this set is rejected.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CatalogPublicKey"
+          }
+        },
+        "syncInterval": {
+          "description": "Catalog sync interval. Defaults to five minutes.",
+          "type": "string",
+          "default": "5m"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CatalogPublicKey": {
+      "description": "A public key pinned by the daemon or the controller.",
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "Base64 raw 32-byte Ed25519 public key.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "keyId",
+        "publicKey"
+      ]
+    },
     "ClaudeCodeConfig": {
       "description": "Settings reconciled into Claude Code's managed configuration.\n\nArbitrary keys are written directly to Agentdesktop's managed-settings\ndrop-in. Generated gateway settings take precedence when values overlap.",
       "type": "object",
@@ -148,6 +201,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "ConfigMode": {
+      "description": "How a daemon chooses the per-agent configuration it applies.",
+      "oneOf": [
+        {
+          "description": "The daemon's local configuration is authoritative; controller pushes do\nnot change `programs` or `programSelection`.",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "The controller-pushed configuration is authoritative.",
+          "type": "string",
+          "const": "managed"
+        }
+      ]
     },
     "ControllerConnectionConfig": {
       "description": "Connection settings used by a daemon to reach the fleet controller.",

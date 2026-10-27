@@ -1,0 +1,36 @@
+schema_version: 1
+id: STORY-2026102757b539fe89bc
+title: Device identity lifecycle QA remediation
+spec_path: docs/specs/STORY-2026102757b539fe89bc.md
+status: archived
+tasks:
+- id: task-11f01d8d82
+  title: Add loopback admin write authorization and CSRF header
+  completed: true
+- id: task-93679c5294
+  title: Send admin write header from controller UI
+  completed: true
+- id: task-020f26fd60
+  title: Bound enrollment previous ID and hostname
+  completed: true
+- id: task-5466c236be
+  title: Fix rejection audit attribution and fail-closed link reasons
+  completed: true
+- id: task-f112cbd8c5
+  title: Make lifecycle transitions concurrency-safe
+  completed: true
+- id: task-5559d097cf
+  title: Separate audit load-more error state in UI
+  completed: true
+- id: task-62e0d6ee9d
+  title: Add daemon device-limit terminal state
+  completed: true
+- id: task-b1171f9d0e
+  title: Add remediation tests and stories
+  completed: true
+- id: task-26007f4f20
+  title: Update target architecture diagram
+  completed: true
+created_at: '2026-10-27T02:33:39+00:00'
+updated_at: '2026-10-27T08:05:00+00:00'
+archived_at: '2026-10-27T08:05:00+00:00'

@@ -19,6 +19,8 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use url::Url;
 
+use crate::device_identity::{valid_hostname, valid_previous_device_id};
+
 const ENROLLMENT_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_PENDING_ENROLLMENTS: usize = 1024;
 const JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,6 +60,7 @@ struct PendingEnrollment {
     /// Absent for device authorization enrollments, which have no
     /// authorization request to bind a nonce to.
     nonce: Option<String>,
+    previous_device_id: Option<String>,
     expires_at: Instant,
 }
 
@@ -66,6 +69,7 @@ pub struct CompletedEnrollment {
     pub issuer: String,
     pub subject: String,
     pub idp_claims: BTreeMap<String, serde_json::Value>,
+    pub previous_device_id: Option<String>,
 }
 
 /// Stable identity authenticated by one OIDC provider.
@@ -158,10 +162,14 @@ impl OidcProvider {
         &self,
         hostname: String,
         code_challenge: &str,
+        previous_device_id: Option<String>,
     ) -> anyhow::Result<BeginEnrollmentResponse> {
-        if hostname.trim().is_empty() {
-            bail!("hostname is required");
+        if !valid_hostname(&hostname) {
+            bail!("invalid hostname");
         }
+        let hostname = hostname.trim().to_owned();
+        let previous_device_id =
+            valid_previous_device_id(previous_device_id.as_deref()).map(str::to_owned);
         if code_challenge.len() != 43
             || !code_challenge
                 .bytes()
@@ -188,6 +196,7 @@ impl OidcProvider {
         self.insert_pending(
             enrollment_id.clone(),
             hostname,
+            previous_device_id,
             Some(nonce),
             ENROLLMENT_LIFETIME,
         )
@@ -209,10 +218,17 @@ impl OidcProvider {
     ///
     /// The daemon polls the token endpoint itself and completes the
     /// enrollment with the resulting tokens, exactly like the browser flow.
-    pub async fn begin_device(&self, hostname: String) -> anyhow::Result<BeginEnrollmentResponse> {
-        if hostname.trim().is_empty() {
-            bail!("hostname is required");
+    pub async fn begin_device(
+        &self,
+        hostname: String,
+        previous_device_id: Option<String>,
+    ) -> anyhow::Result<BeginEnrollmentResponse> {
+        if !valid_hostname(&hostname) {
+            bail!("invalid hostname");
         }
+        let hostname = hostname.trim().to_owned();
+        let previous_device_id =
+            valid_previous_device_id(previous_device_id.as_deref()).map(str::to_owned);
         let endpoint = self
             .inner
             .device_authorization_endpoint
@@ -228,8 +244,14 @@ impl OidcProvider {
         // until the IdP responds — and is narrowed below once it is, or dropped
         // entirely if the IdP call or the response fails.
         let enrollment_id = random_secret();
-        self.insert_pending(enrollment_id.clone(), hostname, None, ENROLLMENT_LIFETIME)
-            .await?;
+        self.insert_pending(
+            enrollment_id.clone(),
+            hostname,
+            previous_device_id,
+            None,
+            ENROLLMENT_LIFETIME,
+        )
+        .await?;
 
         match self.request_device_grant(&enrollment_id, endpoint).await {
             Ok((response, lifetime)) => {
@@ -280,6 +302,7 @@ impl OidcProvider {
         &self,
         enrollment_id: String,
         hostname: String,
+        previous_device_id: Option<String>,
         nonce: Option<String>,
         lifetime: Duration,
     ) -> anyhow::Result<()> {
@@ -294,6 +317,7 @@ impl OidcProvider {
             PendingEnrollment {
                 hostname,
                 nonce,
+                previous_device_id,
                 expires_at: now + lifetime,
             },
         );
@@ -366,6 +390,7 @@ impl OidcProvider {
             issuer: access_principal.issuer,
             subject: access_principal.subject,
             idp_claims,
+            previous_device_id: pending.previous_device_id,
         })
     }
 
@@ -746,6 +771,95 @@ mod tests {
     // reached the IdP — and only got rejected on the insert afterwards. The IdP
     // request must never happen at all once the map is full.
     #[tokio::test]
+    async fn begin_bounds_previous_device_id_and_hostname() {
+        let provider = provider(None);
+        let challenge = "a".repeat(43);
+
+        let response = provider
+            .begin(
+                "host".to_owned(),
+                &challenge,
+                Some("a".repeat(4 * 1024 * 1024)),
+            )
+            .await
+            .expect("begin with an oversized previous ID");
+        {
+            let pending = provider.inner.pending.lock().await;
+            assert!(
+                pending
+                    .get(&response.enrollment_id)
+                    .expect("pending enrollment")
+                    .previous_device_id
+                    .is_none(),
+                "an oversized previous ID must not enter the pending map"
+            );
+        }
+
+        let response = provider
+            .begin("host".to_owned(), &challenge, Some("bad id!".to_owned()))
+            .await
+            .expect("begin with an invalid previous ID");
+        {
+            let pending = provider.inner.pending.lock().await;
+            assert!(
+                pending
+                    .get(&response.enrollment_id)
+                    .expect("pending enrollment")
+                    .previous_device_id
+                    .is_none(),
+                "an invalid previous ID must be ignored"
+            );
+        }
+
+        assert!(
+            provider
+                .begin("h".repeat(256), &challenge, None)
+                .await
+                .is_err(),
+            "an oversized hostname must be rejected"
+        );
+        assert!(
+            provider
+                .begin(
+                    format!("{}host", " ".repeat(4 * 1024 * 1024)),
+                    &challenge,
+                    None
+                )
+                .await
+                .is_err(),
+            "whitespace padding must not bypass the hostname bound"
+        );
+
+        let response = provider
+            .begin(" host ".to_owned(), &challenge, None)
+            .await
+            .expect("begin with a padded hostname");
+        let pending = provider.inner.pending.lock().await;
+        assert_eq!(
+            pending
+                .get(&response.enrollment_id)
+                .expect("pending enrollment")
+                .hostname,
+            "host"
+        );
+        drop(pending);
+
+        let response = provider
+            .begin("host".to_owned(), &challenge, Some("device-1".to_owned()))
+            .await
+            .expect("begin with a valid previous ID");
+        let pending = provider.inner.pending.lock().await;
+        assert_eq!(
+            pending
+                .get(&response.enrollment_id)
+                .expect("pending enrollment")
+                .previous_device_id
+                .as_deref(),
+            Some("device-1")
+        );
+    }
+
+    #[tokio::test]
     async fn begin_device_reserves_capacity_before_contacting_the_idp() {
         let (endpoint, hits, server) =
             count_requests_server(StatusCode::OK, "unused — must not be reached").await;
@@ -758,13 +872,14 @@ mod tests {
                     PendingEnrollment {
                         hostname: "filler".to_owned(),
                         nonce: None,
+                        previous_device_id: None,
                         expires_at: Instant::now() + Duration::from_secs(600),
                     },
                 );
             }
         }
 
-        let result = provider.begin_device("new-host".to_owned()).await;
+        let result = provider.begin_device("new-host".to_owned(), None).await;
 
         assert!(
             result.is_err(),
@@ -795,7 +910,7 @@ mod tests {
         let provider = provider(Some(endpoint));
 
         let response = provider
-            .begin_device("new-host".to_owned())
+            .begin_device("new-host".to_owned(), None)
             .await
             .expect("begin_device succeeds");
 
@@ -823,7 +938,7 @@ mod tests {
             count_requests_server(StatusCode::BAD_REQUEST, "idp rejected the request").await;
         let provider = provider(Some(endpoint));
 
-        let result = provider.begin_device("new-host".to_owned()).await;
+        let result = provider.begin_device("new-host".to_owned(), None).await;
 
         assert!(
             result.is_err(),

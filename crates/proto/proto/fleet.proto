@@ -26,6 +26,10 @@ message BeginEnrollmentRequest {
   // browser redirect, for hosts without a local browser. code_challenge is
   // ignored when set.
   bool device_authorization = 3;
+  // The device ID this enrollment replaces, when the daemon is re-enrolling
+  // after losing its private key. The controller validates it against the
+  // authenticated OIDC principal and the previous device row.
+  string previous_device_id = 4;
 }
 
 message BeginEnrollmentResponse {
